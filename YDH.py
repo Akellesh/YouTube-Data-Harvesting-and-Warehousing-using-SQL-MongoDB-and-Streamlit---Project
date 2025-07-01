@@ -1,11 +1,19 @@
-# Import Packages
+# Import Basic Packages
 import pandas as pd
 import numpy as np
+import streamlit as st
+from streamlit_option_menu import option_menu
+
+# Import Packages for DB
 import pymongo
 import psycopg2
-import streamlit as st
 from psycopg2 import DatabaseError
-from streamlit_option_menu import option_menu
+from googleapiclient.discovery import build
+
+# YouTube API
+api_key = "AIzaSyDFWDGYi9U5UJJn_KvrvG8t55Q-qSzolEs"
+youtube_api = build('youtube', 'v3', developerKey=api_key)
+
 
 # Initialize DataBase connection.
 # Uses st.cache_resource to only run once, for models, connection, tools.
@@ -65,6 +73,27 @@ def create_table():
     finally:
         cur.close()
 
+def get_channel_stats(youtube_api, channel_id):
+    request = youtube_api.channels().list(
+        part='snippet,contentDetails,statistics',
+        id=channel_id)
+    response = request.execute()
+    # st.write(response)
+    try:
+        data = dict(Channel_Id=channel_id,
+          Channel_name=response['items'][0]['snippet']['title'],
+          Subscribers=response['items'][0]['statistics']['subscriberCount'],
+          Views=response['items'][0]['statistics']['viewCount'],
+          Total_videos=response['items'][0]['statistics']['videoCount'],
+          playlist_id=response['items'][0]['contentDetails']['relatedPlaylists']['uploads'])
+        return data
+    except KeyError:
+        return False
+
+
+
+
+
 
 
 
@@ -108,6 +137,18 @@ if selected == "YDH_DB":
             Search = st.button("Search Youtube Channel")
         with col5:
             Extract = st.button("Extract Youtube Channel")
+        if Search:
+            view_data = get_channel_stats(youtube_api, channel_id)
+            if view_data:
+                view_data_df = pd.DataFrame([view_data])
+                st.success("Found Youtube Channel")
+                st.dataframe(view_data_df)
+
+                st.table(view_data_df)
+
+            else:
+                st.success("No Youtube Channel Found")
+
 
 
 if selected == "Contact":
