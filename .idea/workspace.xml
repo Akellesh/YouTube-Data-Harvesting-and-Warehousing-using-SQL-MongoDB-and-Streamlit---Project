@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a49b2a1c-b341-4b20-bafa-f53e7a195125" name="Changes" comment="Postgres DB tables created.">
+    <list default="true" id="a49b2a1c-b341-4b20-bafa-f53e7a195125" name="Changes" comment="Created Get channel stats function, Yotube API key.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/YDH.py" beforeDir="false" afterPath="$PROJECT_DIR$/YDH.py" afterDir="false" />
     </list>
@@ -75,7 +75,8 @@
       <option name="presentableId" value="Default" />
       <updated>1751267640526</updated>
       <workItem from="1751267641567" duration="13584000" />
-      <workItem from="1751339865301" duration="12645000" />
+      <workItem from="1751339865301" duration="12823000" />
+      <workItem from="1751427986849" duration="9973000" />
     </task>
     <task id="LOCAL-00001" summary="Initial Commit">
       <option name="closed" value="true" />
@@ -109,16 +110,36 @@
       <option name="project" value="LOCAL" />
       <updated>1751300988849</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="Created Get channel stats function, Yotube API key.">
+      <option name="closed" value="true" />
+      <created>1751388806978</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1751388806978</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Initial Commit" />
     <MESSAGE value="Postgres DB tables created." />
-    <option name="LAST_COMMIT_MESSAGE" value="Postgres DB tables created." />
+    <MESSAGE value="Created Get channel stats function, Yotube API key." />
+    <option name="LAST_COMMIT_MESSAGE" value="Created Get channel stats function, Yotube API key." />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Youtube_Data_Harvesting$YDH.coverage" NAME="YDH Coverage Results" MODIFIED="1751349624410" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

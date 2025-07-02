@@ -1,28 +1,49 @@
-# Import Basic Packages
+# ---Import Basic Packages--- #
 import pandas as pd
 import numpy as np
+import json
+import time
+import re
+from datetime import datetime
 import streamlit as st
 from streamlit_option_menu import option_menu
 
-# Import Packages for DB
-import pymongo
+# ----Import Packages for DB -----#
+from pymongo import MongoClient
 import psycopg2
 from psycopg2 import DatabaseError
+
+# ------Import Package for Googel API -----#
 from googleapiclient.discovery import build
 
-# YouTube API
+# ---- MongoDB Setup --------------------------- #
+# client = MongoClient("mongodb://localhost:27017/")
+# mg_db = client['YouTubeHarvest']
+# collection_list = mg_db.list_collection_names()
+
+# ---- Helper Functions ---- #
+# def sanitize(name):
+#     return re.sub(r'[.$]', '_', name)
+
+# ----------YouTube API ------------#
 api_key = "AIzaSyDFWDGYi9U5UJJn_KvrvG8t55Q-qSzolEs"
 youtube_api = build('youtube', 'v3', developerKey=api_key)
 
+def safe_api_call(func, *args, retries=3, delay=2):
+    for i in range(retries):
+        try:
+            return func(*args)
+        except Exception as e:
+            time.sleep(delay)
+    return None
 
-# Initialize DataBase connection.
-# Uses st.cache_resource to only run once, for models, connection, tools.
+# --------Initialize Postgres DataBase connection. -----------#
+# --Uses st.cache_resource to only run once, for models, connection, tools. --#
 @st.cache_resource
 def init_connection():
     return psycopg2.connect(**st.secrets["postgres"])
 
-# 2. PostgreSQL - DB Operations
-# -----------------------------
+# ------PostgreSQL - DB Operations -------#
 def create_table():
     conn = init_connection()
     try:
@@ -91,6 +112,53 @@ def get_channel_stats(youtube_api, channel_id):
         return False
 
 
+def update_comment_stats(youtube, param, param1):
+    pass
+
+
+def get_video_stats(youtube, playlist_id):
+    pass
+
+
+def extract_channel_all_details(youtube, channel_id):
+    # Get channel info
+    channel_statistics = get_channel_stats(youtube, channel_id)
+    if not channel_statistics:
+        return None
+
+    playlist_id = channel_statistics.get('playlist_id')
+    if not playlist_id:
+        return None
+
+    # Get all videos
+    # Show Progress Indication
+    with st.spinner('Fetching video statistics...'):
+        video_statistics = get_video_stats(youtube, playlist_id)
+
+    # Extract video IDs
+    video_ids = [video.get('video_id') for video in video_statistics if video.get('video_id')]
+
+    # Get all comments
+    comment_statistics = []
+    # Showing Progress Indication for Each video / comments
+    progress_bar = st.progress(0, text="Fetching comments...")
+    for i, vid in enumerate(video_ids):
+        comment_statistics += update_comment_stats(youtube, [vid], channel_statistics.get("Channel_name", "Unknown"))
+        progress_bar.progress((i + 1) / len(video_ids))
+    # comment_statistics = update_comment_stats(youtube, video_ids, channel_statistics.get("Channel_name", "Unknown_Channel"))
+    # Pack into a single dictionary
+    channel_data = {
+        'Channel_info': channel_statistics,
+        'Video_info': video_statistics,
+        'Comment_info': comment_statistics,
+        'Meta': {
+            'Total Videos': len(video_statistics),
+            'Total Comments': len(comment_statistics)
+        },
+        'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
+    }
+    return channel_data
+
 
 
 
@@ -124,8 +192,8 @@ with st.sidebar:
 if selected == "YDH_DB":
     selected = option_menu(
         menu_title="Youtube_Data_Harvesting_DataBase Menu",
-        options=["View Youtube Channel", "Analyse Youtube Channel"],
-        icons=["database", "database-add"], menu_icon="database-gear",
+        options=["View Youtube Channel", "View Saved Channels", "Analyse Youtube Channel"],
+        icons=["database", "database-add", "gear"], menu_icon="database-gear",
         default_index=0, orientation="horizontal")
 
     if selected == "View Youtube Channel":
@@ -138,21 +206,81 @@ if selected == "YDH_DB":
         with col5:
             Extract = st.button("Extract Youtube Channel")
         if Search:
-            view_data = get_channel_stats(youtube_api, channel_id)
+            view_data = safe_api_call(get_channel_stats,youtube_api, channel_id)
             if view_data:
-                view_data_df = pd.DataFrame([view_data])
+                view_data_df = pd.DataFrame([view_data]).T
                 st.success("Found Youtube Channel")
-                st.dataframe(view_data_df)
+                st.dataframe(view_data_df[1:-1].style.background_gradient())
+                # st.table(view_data_df)
+            else:
+                st.error("Youtube Channel not found. Check the ID and try again.", icon="🚨")
 
-                st.table(view_data_df)
+        if Extract:
+            extracted_data = get_channel_stats(youtube_api, channel_id)
+            if extracted_data:
+                channel_name = extracted_data['Channel_info']['Channel_name']
+
+                # Separate Collections for channel, videos, comments
+                mg_db[f"{channel_name}_meta"].delete_many({})
+                mg_db[f"{channel_name}_meta"].insert_one(extracted_data['Channel_info'])
+
+                mg_db[f"{channel_name}_videos"].delete_many({})
+                if extracted_data['Video_info']:
+                    mg_db[f"{channel_name}_videos"].insert_many(extracted_data['Video_info'])
+
+                mg_db[f"{channel_name}_comments"].delete_many({})
+                if extracted_data['Comment_info']:
+                    mg_db[f"{channel_name}_comments"].insert_many(extracted_data['Comment_info'])
+
+                st.success("✅ Harvest complete and saved to MongoDB")
+
+                # Summary
+                st.write(f"📺 Channel: {channel_name}")
+                st.write(f"🎞️ Videos: {extracted_data['Meta']['Total Videos']}")
+                st.write(f"💬 Comments: {extracted_data['Meta']['Total Comments']}")
+
+                # Download as JSON
+                st.download_button("Download JSON", json.dumps(extracted_data, indent=2), f"{channel_name}_data.json")
+
+                # Plot Chart
+                video_df = pd.DataFrame(extracted_data['Video_info'])
+                if not video_df.empty:
+                    video_df['view_count'] = pd.to_numeric(video_df['view_count'], errors='coerce')
+                    fig = px.bar(video_df.head(10), x='video_title', y='view_count', title='Top 10 Videos by Views')
+                    st.plotly_chart(fig)
+                st.json(extracted_data['Channel_info'])  # or use st.dataframe if tabular
 
             else:
-                st.success("No Youtube Channel Found")
+                st.error("Youtube Channel not found. Check the ID and try again. or failed to retrieve.", icon="🚨")
+
+# ---- Admin Section: View Saved Channels ---- #
+#     st.sidebar.header("View Saved Channels")
+#     if selected == "View Saved Channels":
+        # saved_collections = [c for c in mg_db.list_collection_names() if c.endswith('_meta')]
+        # selected_collection = st.sidebar.selectbox("Select a Channel", saved_collections)
+
+        # if selected_collection:
+        #     doc = mg_db[selected_collection].find_one()
+        #     st.sidebar.subheader("Channel Info")
+        #     st.sidebar.json(doc)
+        #
+        #     video_collection = selected_collection.replace("_meta", "_videos")
+        #     if video_collection in mg_db.list_collection_names():
+        #         videos_df = pd.DataFrame(mg_db[video_collection].find())
+        #         st.subheader("Video Data")
+        #         st.dataframe(videos_df)
+        #
+        #     comment_collection = selected_collection.replace("_meta", "_comments")
+        #     if comment_collection in mg_db.list_collection_names():
+        #         comments_df = pd.DataFrame(mg_db[comment_collection].find())
+        #         st.subheader("Comment Data")
+        #         st.dataframe(comments_df)
 
 
 
-if selected == "Contact":
-    st.subheader('Youtube_Data_Harvesting')
-
+# if selected == "Contact":
+#    st.header('Youtube_Data_Harvesting')
+#
 # if selected == "Home":
+
 
