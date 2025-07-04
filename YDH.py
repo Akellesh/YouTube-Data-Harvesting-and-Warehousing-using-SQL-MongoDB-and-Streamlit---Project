@@ -17,9 +17,14 @@ from psycopg2 import DatabaseError
 from googleapiclient.discovery import build
 
 # ---- MongoDB Setup --------------------------- #
-# client = MongoClient("mongodb://localhost:27017/")
-# mg_db = client['YouTubeHarvest']
-# collection_list = mg_db.list_collection_names()
+# Refers Connection with MongoDB
+connection_url = "mongodb+srv://akelleshv:Guvi2023@youtubecluster.fv56pkj.mongodb.net/?retryWrites=true&w=majority&appName=YoutubeCluster"
+# Creating Client Object for connection based on pymongo and refers connection link
+client = MongoClient(connection_url)
+# Creating mg_yth_db object for DataBase based on client and refers YouTubeHarvest
+mg_yth_db = client['YouTubeHarvest']
+# Creating collection_list for Collection based on mg_yth_db
+collection_list = mg_yth_db.list_collection_names()
 
 # ---- Helper Functions ---- #
 # def sanitize(name):
@@ -221,16 +226,16 @@ if selected == "YDH_DB":
                 channel_name = extracted_data['Channel_info']['Channel_name']
 
                 # Separate Collections for channel, videos, comments
-                mg_db[f"{channel_name}_meta"].delete_many({})
-                mg_db[f"{channel_name}_meta"].insert_one(extracted_data['Channel_info'])
+                mg_yth_db[f"{channel_name}_meta"].delete_many({})
+                mg_yth_db[f"{channel_name}_meta"].insert_one(extracted_data['Channel_info'])
 
-                mg_db[f"{channel_name}_videos"].delete_many({})
+                mg_yth_db[f"{channel_name}_videos"].delete_many({})
                 if extracted_data['Video_info']:
                     mg_db[f"{channel_name}_videos"].insert_many(extracted_data['Video_info'])
 
-                mg_db[f"{channel_name}_comments"].delete_many({})
+                mg_yth_db[f"{channel_name}_comments"].delete_many({})
                 if extracted_data['Comment_info']:
-                    mg_db[f"{channel_name}_comments"].insert_many(extracted_data['Comment_info'])
+                    mg_yth_db[f"{channel_name}_comments"].insert_many(extracted_data['Comment_info'])
 
                 st.success("✅ Harvest complete and saved to MongoDB")
 
@@ -260,19 +265,19 @@ if selected == "YDH_DB":
         # selected_collection = st.sidebar.selectbox("Select a Channel", saved_collections)
 
         # if selected_collection:
-        #     doc = mg_db[selected_collection].find_one()
+        #     doc = mg_yth_db[selected_collection].find_one()
         #     st.sidebar.subheader("Channel Info")
         #     st.sidebar.json(doc)
         #
         #     video_collection = selected_collection.replace("_meta", "_videos")
-        #     if video_collection in mg_db.list_collection_names():
-        #         videos_df = pd.DataFrame(mg_db[video_collection].find())
+        #     if video_collection in mg_yth_db.list_collection_names():
+        #         videos_df = pd.DataFrame(mg_yth_db[video_collection].find())
         #         st.subheader("Video Data")
         #         st.dataframe(videos_df)
         #
         #     comment_collection = selected_collection.replace("_meta", "_comments")
-        #     if comment_collection in mg_db.list_collection_names():
-        #         comments_df = pd.DataFrame(mg_db[comment_collection].find())
+        #     if comment_collection in mg_yth_db.list_collection_names():
+        #         comments_df = pd.DataFrame(mg_yth_db[comment_collection].find())
         #         st.subheader("Comment Data")
         #         st.dataframe(comments_df)
 
