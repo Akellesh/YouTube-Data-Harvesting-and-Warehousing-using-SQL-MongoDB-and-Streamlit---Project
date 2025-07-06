@@ -4,10 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a49b2a1c-b341-4b20-bafa-f53e7a195125" name="Changes" comment="Extract youtube channel data feature created and tested successfully stored in MongoDB, View Saved channels feature created and tested and some bug fixes done for the previous update.">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/YDH.py" beforeDir="false" afterPath="$PROJECT_DIR$/YDH.py" afterDir="false" />
-    </list>
+    <list default="true" id="a49b2a1c-b341-4b20-bafa-f53e7a195125" name="Changes" comment="Some bug fixes done for the previous update." />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -81,7 +78,7 @@
       <workItem from="1751626908583" duration="126000" />
       <workItem from="1751627348213" duration="8124000" />
       <workItem from="1751692361946" duration="21694000" />
-      <workItem from="1751785374062" duration="4510000" />
+      <workItem from="1751785374062" duration="4913000" />
     </task>
     <task id="LOCAL-00001" summary="Initial Commit">
       <option name="closed" value="true" />
@@ -155,7 +152,15 @@
       <option name="project" value="LOCAL" />
       <updated>1751751020642</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="Some bug fixes done for the previous update.">
+      <option name="closed" value="true" />
+      <created>1751820155320</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1751820155320</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -179,7 +184,8 @@
     <MESSAGE value="Created extract channel all details function(all in one function - get_channel_stats, get_video_stats, update_comment_stats), created extract option from streamlit app, improvements by adding timestamps for tracking updates, Export data download option, store videos/comments as separate documents in Mongo db, Retry on API failure(youtube quota or errors), Added progress indicators, Enable data update instead of full delete, Sanitize function for channel names(Mongodb safe), Added view saved channels option in Mongodb, Show stats with charts(plotly express)." />
     <MESSAGE value="Few Modifications done for the previous update." />
     <MESSAGE value="Extract youtube channel data feature created and tested successfully stored in MongoDB, View Saved channels feature created and tested and some bug fixes done for the previous update." />
-    <option name="LAST_COMMIT_MESSAGE" value="Extract youtube channel data feature created and tested successfully stored in MongoDB, View Saved channels feature created and tested and some bug fixes done for the previous update." />
+    <MESSAGE value="Some bug fixes done for the previous update." />
+    <option name="LAST_COMMIT_MESSAGE" value="Some bug fixes done for the previous update." />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Youtube_Data_Harvesting$YDH.coverage" NAME="YDH Coverage Results" MODIFIED="1751632541089" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
