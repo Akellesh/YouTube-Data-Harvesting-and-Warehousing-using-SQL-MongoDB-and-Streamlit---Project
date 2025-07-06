@@ -297,21 +297,19 @@ with st.sidebar:
             "nav-link-selected": {"background-color": "grey"},
         },
     )
-
+api_status = "Waiting for Test YouTube API Connection response..."
 if selected == "YDH_DB":
     selected = option_menu(
         menu_title="Youtube_Data_Harvesting_DataBase Menu",
         options=["Search and Extract Youtube Channel", "View Saved Channels and Migrate", "Analyse Youtube Channel"],
         icons=["database", "database-add", "gear"], menu_icon="database-gear",
         default_index=0, orientation="horizontal")
-    # api_status = []
+
     if selected == "Search and Extract Youtube Channel":
         st.markdown("### 🔍 Test YouTube API Key")
-        api_status = "Waiting for Test YouTube API Connection response..."
+        # api_status = "Waiting for Test YouTube API Connection response..."
         if st.button("Test YouTube API Connection"):
             try:
-                # youtube = get_youtube_api()
-
                 # Try a basic call using Google Developers Channel ID
                 test_channel_id = "UC_x5XG1OV2P6uZZ5FSM9Ttw"
                 response = youtube_api.channels().list(
@@ -336,7 +334,7 @@ if selected == "YDH_DB":
         col4, col5, col6, col7 = st.columns([4, 4, 3, 3])
         with col4:
             Search = st.button("Search Youtube Channel")
-            # progress = st.progress(0, text="waiting for channel....")
+
         with col5:
             Extract = st.button("Extract Youtube Channel")
         if Search:
@@ -352,6 +350,7 @@ if selected == "YDH_DB":
         # progress.progress(100, "Fetching channel info...")
         if Extract:
             # extracted_data = safe_api_call(extract_channel_all_details,youtube_api, channel_id)
+            # st.markdown(api_status)
             extracted_data = extract_channel_all_details(youtube_api, channel_id)
             if extracted_data:
                 channel_name = extracted_data.get('Channel_info', {}).get('Channel_name')  # ['Channel_info']
@@ -434,11 +433,15 @@ if selected == "YDH_DB":
                 # st.subheader("Comment Data")
                 # st.dataframe(comments_df)
 
+if selected == "Contact":
+    st.header('Project: Youtube_Data_Harvesting')
+    st.subheader("My Contact Details")
+    st.write("Created by: Akellesh Vasudevan")
+    st.write("LinkedIn Profile:")
+    st.markdown("https://www.linkedin.com/in/akellesh/")
+    st.write("Github Profile:")
+    st.markdown("https://github.com/Akellesh/YouTube-Data-Harvesting-and-Warehousing-using-SQL-MongoDB-and-Streamlit---Project")
 
-
-# if selected == "Contact":
-#    st.header('Youtube_Data_Harvesting')
-#
-# if selected == "Home":
-
+if selected == "Home":
+    st.header('Project: Youtube_Data_Harvesting')
 
