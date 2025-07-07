@@ -82,7 +82,7 @@ def init_connection():
     return psycopg2.connect(**st.secrets["postgres"])
 
 # ---------------- PostgreSQL - DB Operations ---------------- #
-def create_table():
+def create_postgrsql_table():
     conn = init_connection()
     try:
         cur = conn.cursor()
@@ -308,6 +308,7 @@ if selected == "YDH_DB":
         icons=["database", "database-add", "gear"], menu_icon="database-gear",
         default_index=0, orientation="horizontal")
 
+    # ----------------- Search and Extract Youtube Channel ---------------- #
     if selected == "Search and Extract Youtube Channel":
         st.markdown("### 🔍 Test YouTube API Key")
         # api_status = "Waiting for Test YouTube API Connection response..."
@@ -350,13 +351,13 @@ if selected == "YDH_DB":
                 # st.table(view_data_df)
             else:
                 st.error("Youtube Channel not found. Check the ID and try again.", icon="🚨")
-        # progress.progress(100, "Fetching channel info...")
+
         if Extract:
             # extracted_data = safe_api_call(extract_channel_all_details,youtube_api, channel_id)
             # st.markdown(api_status)
             extracted_data = extract_channel_all_details(youtube_api, channel_id)
             if extracted_data:
-                channel_name = extracted_data.get('Channel_info', {}).get('Channel_name')  # ['Channel_info']
+                channel_name = extracted_data.get('Channel_info', {}).get('Channel_name')
                 if not channel_name:
                     st.error("❌ Channel name is missing in extracted data. Cannot proceed with storage.")
                     st.stop()
@@ -412,14 +413,14 @@ if selected == "YDH_DB":
             else:
                 st.error("Youtube Channel not found. Check the ID and try again. or failed to retrieve.", icon="🚨")
 
-#---- Admin Section: View Saved Channels ---- #
-    # st.sidebar.header("View Saved Channels")
+    # ----------------- View Saved Channels and Migrate ---------------- #
     if selected == "View Saved Channels and Migrate":
         saved_collections = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
-        st.markdown("### 🔍 Select a Channel from the MongoDB Collection")
-        selected_collection = st.selectbox("",saved_collections)
+        st.markdown("### 🔍 Select Saved Youtube Channel from the MongoDB")
+        selected_collection = st.selectbox("Select from dropdown",saved_collections)
 
         if selected_collection:
+            migrate_to_sql = st.button("Migrate Youtube Channel to PostgreSQL")
             doc = mg_yth_db[selected_collection].find_one()
             # st.subheader("Channel Info")
             # st.json(doc)
@@ -435,6 +436,17 @@ if selected == "YDH_DB":
             #     comments_df = pd.DataFrame(mg_yth_db[comment_collection].find())
                 # st.subheader("Comment Data")
                 # st.dataframe(comments_df)
+
+            if migrate_to_sql:
+                create_postgrsql_table()
+                try:
+                    # ------ Get MonngoDB Data ------ #
+
+
+
+    # ----------------- Analyse Youtube Channel ---------------- #
+    if selected == "Analyse Youtube Channel":
+        st.markdown("###")
 
 if selected == "Contact":
     st.header('Project: Youtube_Data_Harvesting')
