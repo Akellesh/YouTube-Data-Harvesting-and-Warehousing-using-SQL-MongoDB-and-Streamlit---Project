@@ -10,16 +10,16 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 import plotly.express as px
 
-# ----Import Packages for DB -----#
+# --------- Import Packages for DB --------- #
 from pymongo import MongoClient, errors
 import psycopg2
 from psycopg2 import DatabaseError
 
-# ------Import Package for Google API ------#
+# ------ Import Package for Google API ------ #
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# ----------YouTube API ------------#
+# --------------- YouTube API ------------------ #
 @st.cache_resource
 def get_youtube_api():
     try:
@@ -35,6 +35,7 @@ def get_youtube_api():
 
 youtube_api = get_youtube_api()
 
+# -------------- Safely Call Youtube API -------------- #
 def safe_api_call(func, *args, retries=3, delay=2):
     for i in range(retries):
         try:
@@ -80,14 +81,14 @@ collection_list = mg_yth_db.list_collection_names()
 def init_connection():
     return psycopg2.connect(**st.secrets["postgres"])
 
-# ------PostgreSQL - DB Operations -------#
+# ---------------- PostgreSQL - DB Operations ---------------- #
 def create_table():
     conn = init_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS Channel_table (Channel_id VARCHAR(255) PRIMARY KEY, Channel_Name VARCHAR(255), 
-                Channnel_Type VARCHAR(255),Channnel_views INT, Channel_description TEXT, Channel_status VARCHAR(255));""")
+            CREATE TABLE IF NOT EXISTS Channel_table (Channel_id VARCHAR(50) PRIMARY KEY, Channel_Name VARCHAR(50), 
+                Subscribers INT,Channnel_views INT, Total_videos INT, harvested_time TIMESTAMP);""")
         conn.commit()
     except DatabaseError as e:
         conn.rollback()
@@ -105,23 +106,10 @@ def create_table():
         st.error(f"Database Error: {e}")
     finally:
         cur.close()
-
     try:
         cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS Comments_table (Comment_id VARCHAR(255), Video_id VARCHAR(255), 
-            Comment_text TEXT, Comment_type VARCHAR(255), Comment_author VARCHAR(255), Comment_published_date DATETIME, 
-            Comment_status VARCHAR(255));""")
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
-
-    try:
-        cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS Videos_table (Video_id VARCHAR(255), Playlist_id VARCHAR(255), 
-                    Video_name VARCHAR(255), Video_description TEXT, Published_date DATETIME, View_count INT
+        cur.execute("""CREATE TABLE IF NOT EXISTS Channel_Videos (Video_id VARCHAR(50) PRIMARY KEY, Playlist_id VARCHAR(50), 
+                    Video_name VARCHAR(120), Video_description TEXT, Published_date TIMESTAMP, View_count INT
             Like_count INT, Dislike_count INT, Favorite_count INT, Comments_count INT, Duration INT, 
             Thumbnail VARCHAR(255), Caption_status VARCHAR(255));""")
         conn.commit()
@@ -131,12 +119,24 @@ def create_table():
     finally:
         cur.close()
 
+    try:
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS Channel_Comments (Comment_id VARCHAR(50) PRIMARY KEY, Video_id VARCHAR(50), 
+            Comment_text TEXT, Comment_date TIMESTAMP, Comment_author VARCHAR(50), Comment_like INT, 
+            ReplyCount INT);""")
+        conn.commit()
+    except DatabaseError as e:
+        conn.rollback()
+        st.error(f"Database Error: {e}")
+    finally:
+        cur.close()
+
+# ------ Function to get Channel Stats -------- #
 def get_channel_stats(youtube_api, channel_id):
     request = youtube_api.channels().list(
         part='snippet,contentDetails,statistics',
         id=channel_id)
     response = request.execute()
-    # st.write(response)
     try:
         data = dict(Channel_Id=channel_id,
           Channel_name=response['items'][0]['snippet']['title'],
@@ -148,49 +148,7 @@ def get_channel_stats(youtube_api, channel_id):
     except KeyError:
         return False
 
-
-def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_video=50):
-    all_comments = []
-
-    for video_id in video_ids:
-        try:
-            next_page_token = None
-            count = 0
-
-            while True:
-                comment_response = youtube_api.commentThreads().list(
-                    part="snippet",
-                    videoId=video_id,
-                    maxResults=min(max_comments_per_video - count, 100),
-                    pageToken=next_page_token,
-                    textFormat="plainText"
-                ).execute()
-
-                for item in comment_response['items']:
-                    comment = item['snippet']['topLevelComment']['snippet']
-                    comment_data = {
-                        "video_id": video_id,
-                        "comment_id": item['id'],
-                        "author": comment.get('authorDisplayName'),
-                        "text": comment.get('textDisplay'),
-                        "like_count": comment.get('likeCount', 0),
-                        "published_at": comment.get('publishedAt')
-                    }
-                    all_comments.append(comment_data)
-
-                count += len(comment_response['items'])
-
-                next_page_token = comment_response.get('nextPageToken')
-                if not next_page_token: # or count >= max_comments_per_video
-                    break
-
-        except Exception as e:
-            print(f"Failed to fetch comments for video {video_id}: {e}")
-            continue
-
-    return all_comments
-
-
+# --------------------- Function to get Video Stats -------------------------- #
 def get_video_stats(youtube_api, playlist_id):
     videos = []
     next_page_token = None
@@ -234,6 +192,49 @@ def get_video_stats(youtube_api, playlist_id):
 
     return videos
 
+# --------------------- Function to get Comments Stats --------------------- #
+def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_video=50):
+    all_comments = []
+
+    for video_id in video_ids:
+        try:
+            next_page_token = None
+            count = 0
+
+            while True:
+                comment_response = youtube_api.commentThreads().list(
+                    part="snippet",
+                    videoId=video_id,
+                    maxResults=min(max_comments_per_video - count, 100),
+                    pageToken=next_page_token,
+                    textFormat="plainText"
+                ).execute()
+
+                for item in comment_response['items']:
+                    comment = item['snippet']['topLevelComment']['snippet']
+                    comment_data = {
+                        "video_id": video_id,
+                        "comment_id": item['id'],
+                        "author": comment.get('authorDisplayName'),
+                        "text": comment.get('textDisplay'),
+                        "like_count": comment.get('likeCount', 0),
+                        "published_at": comment.get('publishedAt')
+                    }
+                    all_comments.append(comment_data)
+
+                count += len(comment_response['items'])
+
+                next_page_token = comment_response.get('nextPageToken')
+                if not next_page_token: # or count >= max_comments_per_video
+                    break
+
+        except Exception as e:
+            print(f"Failed to fetch comments for video {video_id}: {e}")
+            continue
+
+    return all_comments
+
+# ----------- Function to get all the channel video details -------------- #
 def extract_channel_all_details(youtube_api, channel_id):
     # Get channel info
     with st.spinner('Fetching channel statistics...'):
@@ -274,7 +275,9 @@ def extract_channel_all_details(youtube_api, channel_id):
     }
     return channel_data
 
-# Home Page Title
+# ---------------------------------- Streamlit UI -------------------------------------- #
+# -------------------------------------------------------------------------------------- #
+# ------------------------ Streamlit Sidebar Menu and YDH_DB --------------------------- #
 st.set_page_config(page_title="Youtube_Data_Harvesting", layout="wide")
 
 with st.sidebar:
