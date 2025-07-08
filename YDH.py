@@ -7,6 +7,7 @@ import time
 import re
 from datetime import datetime
 import streamlit as st
+from streamlit.runtime.caching import save_media_data
 from streamlit_option_menu import option_menu
 import plotly.express as px
 
@@ -415,23 +416,27 @@ if selected == "YDH_DB":
 
     # ----------------- View Saved Channels and Migrate ---------------- #
     if selected == "View Saved Channels and Migrate":
-        saved_collections = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
+        collection_names = mg_yth_db.list_collection_names()
+        user_channels = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
         st.markdown("### 🔍 Select Saved Youtube Channel from the MongoDB")
-        selected_collection = st.selectbox("Select from dropdown",saved_collections)
+        # selected_collection = st.selectbox("",saved_collections)
 
-        if selected_collection:
+        # user_channels = sorted(set(name.rsplit('_', 1)[0] for name in collection_names if name.endswith('_meta')))
+        selected_channel = st.selectbox("", user_channels)
+
+        if selected_channel:
             migrate_to_sql = st.button("Migrate Youtube Channel to PostgreSQL")
-            doc = mg_yth_db[selected_collection].find_one()
+            doc = mg_yth_db[selected_channel].find_one()
             # st.subheader("Channel Info")
             # st.json(doc)
 
-            video_collection = selected_collection.replace("_meta", "_videos")
+            video_collection = selected_channel.replace("_meta", "_videos")
             if video_collection in mg_yth_db.list_collection_names():
                 videos_df = pd.DataFrame(mg_yth_db[video_collection].find())
                 st.subheader("Video Data")
                 st.dataframe(videos_df)
 
-            # comment_collection = selected_collection.replace("_meta", "_comments")
+            # comment_collection = selected_channel.replace("_meta", "_comments")
             # if comment_collection in mg_yth_db.list_collection_names():
             #     comments_df = pd.DataFrame(mg_yth_db[comment_collection].find())
                 # st.subheader("Comment Data")
@@ -441,7 +446,41 @@ if selected == "YDH_DB":
                 create_postgrsql_table()
                 try:
                     # ------ Get MonngoDB Data ------ #
+                    meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
+                    videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
+                    comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
 
+                    insert_channel_videos()
+
+                    # -- Insert Videos
+                    video_rows = [
+                        (
+                            selected_channel,
+                            v.get("video_id"),
+                            v.get("video_title"),
+                            v.get("published_at"),
+                            int(v.get("view_count", 0))
+                        ) for v in videos
+                    ]
+                    if video_rows:
+                        insert_channel_videos()
+
+                comment_rows = [
+                    (
+                        selected_channel,
+                        c.get("video_id"),
+                        c.get("comment_text"),
+                        c.get("author"),
+                        c.get("published_at")
+                    ) for c in comments
+                ]
+                if comment_rows:
+                    insert_channel_comments()
+
+                st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
+
+                except Exception as e:
+                    st.error(f"❌ Migration failed: {e}")
 
 
     # ----------------- Analyse Youtube Channel ---------------- #
