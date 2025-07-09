@@ -87,96 +87,63 @@ conn = init_connection()
 # ---------------- PostgreSQL - DB Operations ---------------- #
 def create_postgrsql_tables():
     with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS Channel_table (Channel_id VARCHAR(50) PRIMARY KEY, Channel_Name VARCHAR(50), 
+        cur.execute("""CREATE TABLE IF NOT EXISTS Channel_table (Channel_id VARCHAR(50) PRIMARY KEY, Channel_Name VARCHAR(50), 
                 Subscribers INT,Channnel_views INT, Total_videos INT, harvested_time TIMESTAMP);""")
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
 
-    try:
-        cur = conn.cursor()
         cur.execute("""CREATE TABLE IF NOT EXISTS Playlist_table (Playlist_id VARCHAR(255) PRIMARY KEY, Playlist_Name VARCHAR(255),
                        Channel_Name VARCHAR(255), Channel_id VARCHAR(255));""")
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
-    try:
-        cur = conn.cursor()
+
         cur.execute("""CREATE TABLE IF NOT EXISTS Channel_Videos (Video_id VARCHAR(50) PRIMARY KEY, Playlist_id VARCHAR(50), 
                     Video_name VARCHAR(120), Video_description TEXT, Published_date TIMESTAMP, View_count INT
             Like_count INT, Dislike_count INT, Favorite_count INT, Comments_count INT, Duration INT, 
             Thumbnail VARCHAR(255), Caption_status VARCHAR(255));""")
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
 
-    try:
-        cur = conn.cursor()
         cur.execute("""CREATE TABLE IF NOT EXISTS Channel_Comments (Comment_id VARCHAR(50) PRIMARY KEY, Video_id VARCHAR(50), 
             Comment_text TEXT, Comment_date TIMESTAMP, Comment_author VARCHAR(50), Comment_like INT, 
             ReplyCount INT);""")
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
+
+    conn.commit()
 
 # ---------- Insert Channel meta - PostgreSQL------------- #
-def insert_channel_meta():
+def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
     try:
-        cur = conn.cursor()
-        cur.executemany("""INSERT INTO channel_meta (channel_name, subscribers, views, total_videos, harvested_at)
-                       VALUES (%s, %s, %s, %s, %s) ON CONFLICT (channel_name) DO
-                       UPDATE  SET subscribers = EXCLUDED.subscribers, views = EXCLUDED.views, total_videos = EXCLUDED.total_videos, 
-                           harvested_at = EXCLUDED.harvested_at;""", meta_rows)
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
+        create_postgrsql_tables(conn)
+        # ------ Get MonngoDB Data ------ #
+        meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
+        videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
+        comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
 
-# ---------- Insert Channel Videos - PostgreSQL------------- #
-def insert_channel_videos():
-    try:
-        cur = conn.cursor()
-        cur.execute("""INSERT INTO channel_videos (channel_name, video_id, video_title,
-                                                   published_at, view_count)
-                       VALUES %s ON CONFLICT (video_id) 
-                        DO NOTHING;""", video_rows)
-        conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
+        # ------------ Insert Channel meta - PostgreSQL ---------------- #
+        meta_rows = [(selected_channel, meta.get('Channel_name'), meta.get('Subscribers', 0), meta.get('Views', 0),
+                      meta.get('Total_videos', 0), meta.get('Harvested_at'))]
+        with conn.cursor() as cur:
+            cur.executemany("""INSERT INTO channel_meta (channel_name, subscribers, views, total_videos, harvested_at)
+                       VALUES (%s, %s, %s, %s, %s) ON CONFLICT (channel_name) DO UPDATE  SET 
+                       subscribers = EXCLUDED.subscribers, views = EXCLUDED.views, total_videos = EXCLUDED.total_videos, 
+                       harvested_at = EXCLUDED.harvested_at;""", meta_rows)
 
-# ---------- Insert Channel comments - PostgreSQL------------- #
-def insert_channel_comments():
-    try:
-        cur = conn.cursor()
-        execute_values(cur, """INSERT INTO channel_comments (channel_name, video_id, comment_text, author,
-                                                     published_at)
-                       VALUES %s;""", comment_rows)
+        # ---------- Insert Channel Videos - PostgreSQL------------- #
+        if videos:
+            video_rows = [(selected_channel, v.get("video_id"), v.get("video_title"), v.get("published_at"),
+                    int(v.get("view_count", 0))) for v in videos]
+            with conn.cursor() as cur:
+                execute_values(cur, """INSERT INTO channel_videos (channel_name, video_id, video_title, published_at, 
+                              view_count) VALUES %s ON CONFLICT (video_id) DO NOTHING;""", video_rows)
+        # ---------- Insert Channel comments - PostgreSQL------------- #
+        if comments:
+            comment_rows = [(selected_channel, c.get("video_id"), c.get("comment_text"), c.get("author"),
+                         c.get("published_at")) for c in comments]
+            with conn.cursor() as cur:
+                execute_values(cur, """INSERT INTO channel_comments (channel_name, video_id, comment_text, 
+                            comment_author, published_at)VALUES %s;""", comment_rows)
         conn.commit()
-    except DatabaseError as e:
-        conn.rollback()
-        st.error(f"Database Error: {e}")
-    finally:
-        cur.close()
+        st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
 
-# ------ Function to get Channel Stats -------- #
+    except Exception as e:
+        conn.rollback()
+        st.error(f"❌ Migration failed: {e}")
+
+# ------------------- Function to get Channel Stats ------------------- #
 def get_channel_stats(youtube_api, channel_id):
     request = youtube_api.channels().list(
         part='snippet,contentDetails,statistics',
@@ -248,12 +215,9 @@ def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_
                 for item in comment_response['items']:
                     comment = item['snippet']['topLevelComment']['snippet']
                     comment_data = {
-                        "video_id": video_id,
-                        "comment_id": item['id'],
-                        "author": comment.get('authorDisplayName'),
-                        "text": comment.get('textDisplay'),
-                        "like_count": comment.get('likeCount', 0),
-                        "published_at": comment.get('publishedAt')
+                        "video_id": video_id, "comment_id": item['id'],
+                        "author": comment.get('authorDisplayName'), "text": comment.get('textDisplay'),
+                        "like_count": comment.get('likeCount', 0), "published_at": comment.get('publishedAt')
                     }
                     all_comments.append(comment_data)
 
@@ -299,13 +263,9 @@ def extract_channel_all_details(youtube_api, channel_id):
     # comment_statistics = update_comment_stats(youtube, video_ids, channel_statistics.get("Channel_name", "Unknown_Channel"))
     # Pack into a single dictionary
     channel_data = {
-        'Channel_info': channel_statistics,
-        'Video_info': video_statistics,
-        'Comment_info': comment_statistics,
+        'Channel_info': channel_statistics, 'Video_info': video_statistics, 'Comment_info': comment_statistics,
         'Meta': {
-            'Total Videos': len(video_statistics),
-            'Total Comments': len(comment_statistics)
-        },
+            'Total Videos': len(video_statistics), 'Total Comments': len(comment_statistics)},
         'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
     }
     return channel_data
@@ -395,12 +355,9 @@ if selected == "YDH_DB":
                 # Save metadata with timestamp
                 mg_yth_db[f"{channel_name}_meta"].delete_many({})
                 mg_yth_db[f"{channel_name}_meta"].insert_one({
-                    "Channel_name": extracted_data.get('Channel_name'),
-                    "Subscribers": extracted_data.get('Subscribers'),
-                    "Views": extracted_data.get('Views'),
-                    "Total_videos": extracted_data.get('Total_videos'),
-                    "Harvested_at": datetime.now().isoformat()
-                })
+                    "Channel_name": extracted_data.get('Channel_name'), "Subscribers": extracted_data.get('Subscribers'),
+                    "Views": extracted_data.get('Views'), "Total_videos": extracted_data.get('Total_videos'),
+                    "Harvested_at": datetime.now().isoformat()})
 
                 # Save videos
                 mg_yth_db[f"{channel_name}_videos"].delete_many({})
@@ -472,33 +429,7 @@ if selected == "YDH_DB":
                 # st.dataframe(comments_df)
 
             if migrate_to_sql:
-                create_postgrsql_table()
-                try:
-                    # ------ Get MonngoDB Data ------ #
-                    meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
-                    videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
-                    comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
-                    meta_rows = [(selected_channel, meta.get('Channel_name'), meta.get('Subscribers', 0), meta.get('Views', 0),
-                                  meta.get('Total_videos', 0), meta.get('Harvested_at'))]
-                    if meta_rows:
-                        insert_channel_meta(meta_rows)
-
-                    # -- Insert Videos
-                    video_rows = [(selected_channel, v.get("video_id"), v.get("video_title"), v.get("published_at"),
-                            int(v.get("view_count", 0))) for v in videos]
-                    if video_rows:
-                        insert_channel_videos(video_rows)
-
-                    comment_rows = [(selected_channel, c.get("video_id"), c.get("comment_text"), c.get("author"),
-                                     c.get("published_at")) for c in comments]
-                    if comment_rows:
-                        insert_channel_comments(comment_rows)
-
-                    st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
-
-                except Exception as e:
-                    st.error(f"❌ Migration failed: {e}")
-
+                migrate_to_postgresql(conn, selected_channel, mg_yth_db)
 
     # ----------------- Analyse Youtube Channel ---------------- #
     if selected == "Analyse Youtube Channel":
