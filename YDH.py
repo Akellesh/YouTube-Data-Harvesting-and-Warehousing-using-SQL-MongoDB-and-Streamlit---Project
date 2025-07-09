@@ -14,6 +14,7 @@ import plotly.express as px
 # --------- Import Packages for DB --------- #
 from pymongo import MongoClient, errors
 import psycopg2
+from psycopg2.extras import execute_values
 from psycopg2 import DatabaseError
 
 # ------ Import Package for Google API ------ #
@@ -81,12 +82,11 @@ collection_list = mg_yth_db.list_collection_names()
 @st.cache_resource
 def init_connection():
     return psycopg2.connect(**st.secrets["postgres"])
+conn = init_connection()
 
 # ---------------- PostgreSQL - DB Operations ---------------- #
-def create_postgrsql_table():
-    conn = init_connection()
-    try:
-        cur = conn.cursor()
+def create_postgrsql_tables():
+    with conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS Channel_table (Channel_id VARCHAR(50) PRIMARY KEY, Channel_Name VARCHAR(50), 
                 Subscribers INT,Channnel_views INT, Total_videos INT, harvested_time TIMESTAMP);""")
@@ -132,6 +132,50 @@ def create_postgrsql_table():
     finally:
         cur.close()
 
+# ---------- Insert Channel meta - PostgreSQL------------- #
+def insert_channel_meta():
+    try:
+        cur = conn.cursor()
+        cur.executemany("""INSERT INTO channel_meta (channel_name, subscribers, views, total_videos, harvested_at)
+                       VALUES (%s, %s, %s, %s, %s) ON CONFLICT (channel_name) DO
+                       UPDATE  SET subscribers = EXCLUDED.subscribers, views = EXCLUDED.views, total_videos = EXCLUDED.total_videos, 
+                           harvested_at = EXCLUDED.harvested_at;""", meta_rows)
+        conn.commit()
+    except DatabaseError as e:
+        conn.rollback()
+        st.error(f"Database Error: {e}")
+    finally:
+        cur.close()
+
+# ---------- Insert Channel Videos - PostgreSQL------------- #
+def insert_channel_videos():
+    try:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO channel_videos (channel_name, video_id, video_title,
+                                                   published_at, view_count)
+                       VALUES %s ON CONFLICT (video_id) 
+                        DO NOTHING;""", video_rows)
+        conn.commit()
+    except DatabaseError as e:
+        conn.rollback()
+        st.error(f"Database Error: {e}")
+    finally:
+        cur.close()
+
+# ---------- Insert Channel comments - PostgreSQL------------- #
+def insert_channel_comments():
+    try:
+        cur = conn.cursor()
+        execute_values(cur, """INSERT INTO channel_comments (channel_name, video_id, comment_text, author,
+                                                     published_at)
+                       VALUES %s;""", comment_rows)
+        conn.commit()
+    except DatabaseError as e:
+        conn.rollback()
+        st.error(f"Database Error: {e}")
+    finally:
+        cur.close()
+
 # ------ Function to get Channel Stats -------- #
 def get_channel_stats(youtube_api, channel_id):
     request = youtube_api.channels().list(
@@ -156,23 +200,17 @@ def get_video_stats(youtube_api, playlist_id):
     count = 0
 
     while True:
-        playlist_response = youtube_api.playlistItems().list(
-            part="contentDetails",
-            playlistId=playlist_id,
-            maxResults=50, # maxResults=min(max_results - count, 50),
-            pageToken=next_page_token
-        ).execute()
-
+        playlist_response = youtube_api.playlistItems().list(part="contentDetails",playlistId=playlist_id,
+            maxResults=50,pageToken=next_page_token).execute()
+        # maxResults=min(max_results - count, 50)
         video_ids = [item['contentDetails']['videoId'] for item in playlist_response['items']]
         count += len(video_ids)
 
         if not video_ids:
             break
 
-        video_response = youtube_api.videos().list(
-            part="snippet,contentDetails,statistics",
-            id=",".join(video_ids)
-        ).execute()
+        video_response = youtube_api.videos().list(part="snippet,contentDetails,statistics",
+            id=",".join(video_ids)).execute()
 
         for item in video_response['items']:
             video_data = {
@@ -203,13 +241,9 @@ def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_
             count = 0
 
             while True:
-                comment_response = youtube_api.commentThreads().list(
-                    part="snippet",
-                    videoId=video_id,
-                    maxResults=min(max_comments_per_video - count, 100),
-                    pageToken=next_page_token,
-                    textFormat="plainText"
-                ).execute()
+                comment_response = youtube_api.commentThreads().list(part="snippet", videoId=video_id,
+                    maxResults=min(max_comments_per_video - count, 100), pageToken=next_page_token,
+                    textFormat="plainText").execute()
 
                 for item in comment_response['items']:
                     comment = item['snippet']['topLevelComment']['snippet']
@@ -283,11 +317,9 @@ st.set_page_config(page_title="Youtube_Data_Harvesting", layout="wide")
 
 with st.sidebar:
     selected = option_menu(
-        menu_title="Youtube_Data_Harvesting Menu",
-        options=["Home","---", "YDH_DB", "---","Contact"],
+        menu_title="Youtube_Data_Harvesting Menu", options=["Home","---", "YDH_DB", "---","Contact"],
         icons=["house", "upload", "envelope"], # "gear",
-        menu_icon="cast",
-        default_index=0,
+        menu_icon="cast", default_index=0,
         # orientation="horizontal",
         styles={
             "container": {"padding": "0!important", "background-color": "#AFBFAB"},
@@ -317,10 +349,7 @@ if selected == "YDH_DB":
             try:
                 # Try a basic call using Google Developers Channel ID
                 test_channel_id = "UC_x5XG1OV2P6uZZ5FSM9Ttw"
-                response = youtube_api.channels().list(
-                    part="snippet",
-                    id=test_channel_id
-                ).execute()
+                response = youtube_api.channels().list(part="snippet", id=test_channel_id).execute()
 
                 channel_info = response['items'][0]['snippet']
                 # st.success("✅ YouTube API key is valid!")
@@ -449,35 +478,23 @@ if selected == "YDH_DB":
                     meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
                     videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
                     comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
-
-                    insert_channel_videos()
+                    meta_rows = [(selected_channel, meta.get('Channel_name'), meta.get('Subscribers', 0), meta.get('Views', 0),
+                                  meta.get('Total_videos', 0), meta.get('Harvested_at'))]
+                    if meta_rows:
+                        insert_channel_meta(meta_rows)
 
                     # -- Insert Videos
-                    video_rows = [
-                        (
-                            selected_channel,
-                            v.get("video_id"),
-                            v.get("video_title"),
-                            v.get("published_at"),
-                            int(v.get("view_count", 0))
-                        ) for v in videos
-                    ]
+                    video_rows = [(selected_channel, v.get("video_id"), v.get("video_title"), v.get("published_at"),
+                            int(v.get("view_count", 0))) for v in videos]
                     if video_rows:
-                        insert_channel_videos()
+                        insert_channel_videos(video_rows)
 
-                comment_rows = [
-                    (
-                        selected_channel,
-                        c.get("video_id"),
-                        c.get("comment_text"),
-                        c.get("author"),
-                        c.get("published_at")
-                    ) for c in comments
-                ]
-                if comment_rows:
-                    insert_channel_comments()
+                    comment_rows = [(selected_channel, c.get("video_id"), c.get("comment_text"), c.get("author"),
+                                     c.get("published_at")) for c in comments]
+                    if comment_rows:
+                        insert_channel_comments(comment_rows)
 
-                st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
+                    st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
 
                 except Exception as e:
                     st.error(f"❌ Migration failed: {e}")
