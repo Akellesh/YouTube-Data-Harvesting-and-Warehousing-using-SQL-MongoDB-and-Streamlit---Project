@@ -6,6 +6,9 @@ import bson
 import time
 import re
 from datetime import datetime
+import isodate
+from textblob import TextBlob
+from langdetect import detect
 import streamlit as st
 from streamlit.runtime.caching import save_media_data
 from streamlit_option_menu import option_menu
@@ -85,31 +88,42 @@ def init_connection():
     return psycopg2.connect(host="localhost", user="postgres", password="Post@2025", port=5434, dbname="ythdb")
 # conn = init_connection()
 
+def parse_duration_to_hms(duration_str):
+    try:
+        duration = isodate.parse_duration(duration_str)
+        total_seconds = int(duration.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02}:{minutes:02}:{seconds:02}"
+    except Exception:
+        return None
+
 # ---------------- PostgreSQL - DB Operations ---------------- #
 def create_postgrsql_tables(conn):
     with st.spinner("🔧 Creating PostgreSQL tables..."):
         try:
             with conn.cursor() as cur:
                 cur.execute("""CREATE TABLE IF NOT EXISTS channel_table (channel_id VARCHAR(50) PRIMARY KEY, 
-                    channel_Name VARCHAR(50), subscribers INT, channnel_views INT, total_videos INT, 
+                    channel_name VARCHAR(50), subscribers INT, channnel_views INT, total_videos INT, 
                     harvested_time TIMESTAMP);""")
 
                 cur.execute("""CREATE TABLE IF NOT EXISTS channel_playlist (playlist_id VARCHAR(255) PRIMARY KEY, 
-                    playlist_Name VARCHAR(100), channel_Name VARCHAR(255), channel_id VARCHAR(255), description TEXT,
+                    playlist_name VARCHAR(100), channel_name VARCHAR(255), channel_id VARCHAR(255), description TEXT,
                     item_count INT, privacy_status VARCHAR(50), published_at TIMESTAMP, 
                     harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
 
                 cur.execute("""CREATE TABLE IF NOT EXISTS channel_videos (video_id VARCHAR(50) PRIMARY KEY, 
                     playlist_id VARCHAR(50), video_name VARCHAR(120), video_description TEXT, published_date TIMESTAMP,
-                    category_id INT, duration TIME, video_quality VARCHAR(20), caption_status VARCHAR(20),
-                    licensed VARCHAR(10), view_count INT, like_count INT, dislike_count INT, 
-                    favorite_count INT, comments_count INT,  thumbnail VARCHAR(120), 
-                    caption_status VARCHAR(150));""")
+                    category_id INT, duration TIME, video_quality VARCHAR(20), licensed VARCHAR(10), 
+                    view_count INT, like_count INT, dislike_count INT, favorite_count INT, comments_count INT,  
+                    thumbnail VARCHAR(120), caption_status VARCHAR(150));""")
 
                 cur.execute("""CREATE TABLE IF NOT EXISTS channel_comments (comment_id VARCHAR(50) PRIMARY KEY, video_id VARCHAR(50), 
-                    comment_text TEXT, comment_date TIMESTAMP, comment_author VARCHAR(255), comment_like INT DEFAULT 0, 
-                    reply_count INT DEFAULT 0, is_pinned BOOLEAN DEFAULT FALSE, is_hearted BOOLEAN DEFAULT FALSE, 
-                    language VARCHAR(10), sentiment_score FLOAT, harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
+                    channel_name VARCHAR(50), comment_text TEXT, comment_date TIMESTAMP, comment_author VARCHAR(255), 
+                    comment_like INT DEFAULT 0, reply_count INT DEFAULT 0, is_pinned BOOLEAN DEFAULT FALSE, 
+                    is_hearted BOOLEAN DEFAULT FALSE, language VARCHAR(10), sentiment_score FLOAT, 
+                    harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
 
             conn.commit()
         except Exception as e:
@@ -151,38 +165,65 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
 
         # ------------ Insert Channel meta - PostgreSQL ---------------- #
         progress_bar.progress(0.2, "📦 Preparing metadata for insert...")
-        meta_rows = [(selected_channel, meta.get('Channel_name'), meta.get('Subscribers', 0), meta.get('Views', 0),
-                      meta.get('Total_videos', 0), meta.get('Harvested_at'))]
+        meta_rows = [(selected_channel, meta.get('Channel_id'), meta.get('Subscribers', 0), meta.get('Views', 0),
+                      meta.get('Total_videos', 0), meta.get('Harvested_at', datetime.now()))]
         with conn.cursor() as cur:
             cur.execute("""INSERT INTO channel_table (channel_id, channel_name, subscribers, channnel_views, 
                                                       total_videos, harvested_time)
-                       VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_name) DO UPDATE  SET
-                       subscribers = EXCLUDED.subscribers, channnel_views = EXCLUDED.channnel_views, total_videos = EXCLUDED.total_videos, 
-                       harvested_time = EXCLUDED.harvested_time;""", meta_rows[0])
+                       VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO UPDATE  SET 
+                               channel_name = EXCLUDED.channel_name, subscribers = EXCLUDED.subscribers, 
+                               channnel_views = EXCLUDED.channnel_views, total_videos = EXCLUDED.total_videos, 
+                               harvested_time = EXCLUDED.harvested_time;""", meta_rows[0])
+
+        # --------------- Insert into channel_playlist ---------------- #
+        progress_bar.progress(0.3, "🎞 Inserting video records...")
+        if playlists:
+            playlist_rows = [(p.get("playlist_id"), p.get("playlist_title"), selected_channel, meta.get("Channel_id"),
+                    p.get("description", ""), p.get("item_count", 0), p.get("privacy_status", "public"),
+                    p.get("published_at"), datetime.now()) for p in playlists]
+            with conn.cursor() as cur:
+                execute_values(cur, """INSERT INTO channel_playlist (playlist_id, playlist_Name, channel_name,
+                                channel_id, description, item_count, privacy_status, published_at, harvested_at)
+                                    VALUES %s ON CONFLICT (playlist_id) DO NOTHING;""", playlist_rows)
 
         # ---------- Insert Channel Videos - PostgreSQL------------- #
-        progress_bar.progress(0.4, "🎞 Inserting video records...")
+        progress_bar.progress(0.45, "🎞 Inserting video records...")
         if videos:
-            video_rows = [(selected_channel, v.get("video_id"), v.get("video_title"), v.get("published_at"),
-                    int(v.get("view_count", 0))) for v in videos]
+            video_rows = [(v.get("video_id"), v.get("playlist_id"), v.get("video_title"), v.get("description", ""),
+                    v.get("published_at"), int(v.get("category_id", 0)), parse_duration_to_hms(v.get("duration")),
+                    v.get("definition", "hd"), v.get("licensed_content", "No"), int(v.get("view_count", 0)),
+                    int(v.get("like_count", 0)), int(v.get("dislike_count", 0)), int(v.get("favorite_count", 0)),
+                    int(v.get("comment_count", 0)), v.get("thumbnail", ""), v.get("caption_status", "Unknown"))
+                           for v in videos]
             with conn.cursor() as cur:
-                execute_values(cur, """INSERT INTO channel_videos (channel_name, video_id, video_title, published_at, 
-                              view_count) VALUES %s ON CONFLICT (video_id) DO NOTHING;""", video_rows)
+                execute_values(cur, """INSERT INTO channel_videos (video_id, playlist_id, video_name, 
+                        video_description, published_date, category_id, duration, video_quality, 
+                        licensed, view_count, like_count, dislike_count, favorite_count, comments_count,
+                        thumbnail, caption_status) VALUES %s ON CONFLICT (video_id) DO NOTHING;""", video_rows)
+
         if not videos:
             st.info("No videos to migrate.")
 
         # ---------- Insert Channel comments - PostgreSQL------------- #
         progress_bar.progress(0.7, "💬 Inserting comment records...")
         if comments:
-            comment_rows = [(selected_channel, c.get("video_id"), c.get("comment_text"), c.get("author"),
-                         c.get("published_at")) for c in comments]
+            comment_rows = []
+            for c in comments:
+                text = c.get("comment_text", "")
+                try:
+                    sentiment = TextBlob(text).sentiment.polarity
+                    lang = detect(text)
+                except:
+                    sentiment = None
+                    lang = "en"
+                comment_rows.append((c.get("comment_id"), c.get("video_id"), selected_channel, c.get("comment_text"),
+                    c.get("comment_date"), c.get("author"), int(c.get("like_count", 0)), int(c.get("reply_count", 0)),
+                    c.get("is_pinned", False), c.get("is_hearted", False), lang, sentiment, datetime.now()))
             with conn.cursor() as cur:
-                execute_values(cur, """INSERT INTO channel_comments (comment_id, video_id, comment_text, 
-                            comment_author, published_at)VALUES %s;""", comment_rows)
+                execute_values(cur, """INSERT INTO channel_comments (comment_id, video_id, channel_name, comment_text, 
+                        comment_date, comment_author, comment_like, reply_count, is_pinned, is_hearted,
+                        language, sentiment_score, harvested_at) VALUES %s ON CONFLICT (comment_id) DO NOTHING;""", comment_rows)
 
-                cur.execute("""CREATE TABLE IF NOT EXISTS channel_comments (comment_id VARCHAR (50) PRIMARY KEY, video_id VARCHAR
-                               (50), comment_text TEXT, comment_date TIMESTAMP, comment_author VARCHAR
-                               (50), comment_like INT, reply_count INT);""")
         if not comments:
             st.info("No comments to migrate.")
 
