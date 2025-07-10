@@ -87,66 +87,110 @@ def init_connection():
 
 # ---------------- PostgreSQL - DB Operations ---------------- #
 def create_postgrsql_tables(conn):
-    with conn.cursor() as cur:
-        cur.execute("""CREATE TABLE IF NOT EXISTS Channel_table (Channel_id VARCHAR(50) PRIMARY KEY, Channel_Name VARCHAR(50), 
-                Subscribers INT,Channnel_views INT, Total_videos INT, harvested_time TIMESTAMP);""")
+    with st.spinner("🔧 Creating PostgreSQL tables..."):
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""CREATE TABLE IF NOT EXISTS channel_table (channel_id VARCHAR(50) PRIMARY KEY, 
+                    channel_Name VARCHAR(50), subscribers INT, channnel_views INT, total_videos INT, 
+                    harvested_time TIMESTAMP);""")
 
-        cur.execute("""CREATE TABLE IF NOT EXISTS Playlist_table (Playlist_id VARCHAR(255) PRIMARY KEY, Playlist_Name VARCHAR(100),
-                       Channel_Name VARCHAR(255), Channel_id VARCHAR(255));""")
+                cur.execute("""CREATE TABLE IF NOT EXISTS channel_playlist (playlist_id VARCHAR(255) PRIMARY KEY, 
+                    playlist_Name VARCHAR(100), channel_Name VARCHAR(255), channel_id VARCHAR(255), description TEXT,
+                    item_count INT, privacy_status VARCHAR(50), published_at TIMESTAMP, 
+                    harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
 
-        # cur.execute("""CREATE TABLE IF NOT EXISTS Channel_Videos (Video_id VARCHAR(50) PRIMARY KEY, Playlist_id VARCHAR(50),
-        #             Video_name VARCHAR(120), Video_description TEXT, Published_date TIMESTAMP, Channeel_View_count INT
-        #     channel_like_count INT, channel_dislike_count INT, channel_favorite_count INT, Comments_count INT, Duration INT,
-        #     Thumbnail VARCHAR(120), Caption_status VARCHAR(150));""")
+                cur.execute("""CREATE TABLE IF NOT EXISTS channel_videos (video_id VARCHAR(50) PRIMARY KEY, 
+                    playlist_id VARCHAR(50), video_name VARCHAR(120), video_description TEXT, published_date TIMESTAMP,
+                    category_id INT, duration TIME, video_quality VARCHAR(20), caption_status VARCHAR(20),
+                    licensed VARCHAR(10), view_count INT, like_count INT, dislike_count INT, 
+                    favorite_count INT, comments_count INT,  thumbnail VARCHAR(120), 
+                    caption_status VARCHAR(150));""")
 
-        cur.execute("""CREATE TABLE IF NOT EXISTS Channel_Comments (Comment_id VARCHAR(50) PRIMARY KEY, Video_id VARCHAR(50), 
-            Comment_text TEXT, Comment_date TIMESTAMP, Comment_author VARCHAR(50), Comment_like INT, 
-            ReplyCount INT);""")
+                cur.execute("""CREATE TABLE IF NOT EXISTS channel_comments (comment_id VARCHAR(50) PRIMARY KEY, video_id VARCHAR(50), 
+                    comment_text TEXT, comment_date TIMESTAMP, comment_author VARCHAR(255), comment_like INT DEFAULT 0, 
+                    reply_count INT DEFAULT 0, is_pinned BOOLEAN DEFAULT FALSE, is_hearted BOOLEAN DEFAULT FALSE, 
+                    language VARCHAR(10), sentiment_score FLOAT, harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
 
-    conn.commit()
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            st.error(f"❌ Table creation failed: {e}")
 
 # ---------- Insert Channel meta - PostgreSQL------------- #
 def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
     try:
         create_postgrsql_tables(conn)
+        progress_bar = st.progress(0, text="📤 Starting migration...")
+
         # ------ Get MonngoDB Data ------ #
         meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
         if not meta:
             st.error(f"⚠️ No metadata found for channel: {selected_channel}")
             return
+        playlists = list(mg_yth_db[f"{selected_channel}_playlists"].find()) if (f"{selected_channel}_playlists" in
+                                    mg_yth_db.list_collection_names()) else []
         videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
 
         comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
+
         # Remove ObjectId (_id) fields
-        for item in [meta] + videos + comments:
-            if isinstance(item, dict):
-                item.pop('_id', None)
+        # for item in [meta] + videos + comments:
+        #     if isinstance(item, dict):
+        #         item.pop('_id', None)
+
+        def remove_mongo_ids(docs):
+            for d in docs:
+                if isinstance(d, dict):
+                    d.pop('_id', None)
+            return docs
+
+        meta = remove_mongo_ids([meta])[0]  # single dict
+        playlists = remove_mongo_ids(playlists)
+        videos = remove_mongo_ids(videos)
+        comments = remove_mongo_ids(comments)
 
         # ------------ Insert Channel meta - PostgreSQL ---------------- #
+        progress_bar.progress(0.2, "📦 Preparing metadata for insert...")
         meta_rows = [(selected_channel, meta.get('Channel_name'), meta.get('Subscribers', 0), meta.get('Views', 0),
                       meta.get('Total_videos', 0), meta.get('Harvested_at'))]
         with conn.cursor() as cur:
-            cur.execute("""INSERT INTO channel_meta (channel_name, subscribers, views, total_videos, harvested_at)
-                       VALUES (%s, %s, %s, %s, %s) ON CONFLICT (channel_name) DO UPDATE  SET 
-                       subscribers = EXCLUDED.subscribers, views = EXCLUDED.views, total_videos = EXCLUDED.total_videos, 
-                       harvested_at = EXCLUDED.harvested_at;""", meta_rows[0])
+            cur.execute("""INSERT INTO channel_table (channel_id, channel_name, subscribers, channnel_views, 
+                                                      total_videos, harvested_time)
+                       VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_name) DO UPDATE  SET
+                       subscribers = EXCLUDED.subscribers, channnel_views = EXCLUDED.channnel_views, total_videos = EXCLUDED.total_videos, 
+                       harvested_time = EXCLUDED.harvested_time;""", meta_rows[0])
 
         # ---------- Insert Channel Videos - PostgreSQL------------- #
+        progress_bar.progress(0.4, "🎞 Inserting video records...")
         if videos:
             video_rows = [(selected_channel, v.get("video_id"), v.get("video_title"), v.get("published_at"),
                     int(v.get("view_count", 0))) for v in videos]
             with conn.cursor() as cur:
                 execute_values(cur, """INSERT INTO channel_videos (channel_name, video_id, video_title, published_at, 
                               view_count) VALUES %s ON CONFLICT (video_id) DO NOTHING;""", video_rows)
+        if not videos:
+            st.info("No videos to migrate.")
+
         # ---------- Insert Channel comments - PostgreSQL------------- #
+        progress_bar.progress(0.7, "💬 Inserting comment records...")
         if comments:
             comment_rows = [(selected_channel, c.get("video_id"), c.get("comment_text"), c.get("author"),
                          c.get("published_at")) for c in comments]
             with conn.cursor() as cur:
-                execute_values(cur, """INSERT INTO channel_comments (channel_name, video_id, comment_text, 
+                execute_values(cur, """INSERT INTO channel_comments (comment_id, video_id, comment_text, 
                             comment_author, published_at)VALUES %s;""", comment_rows)
+
+                cur.execute("""CREATE TABLE IF NOT EXISTS channel_comments (comment_id VARCHAR (50) PRIMARY KEY, video_id VARCHAR
+                               (50), comment_text TEXT, comment_date TIMESTAMP, comment_author VARCHAR
+                               (50), comment_like INT, reply_count INT);""")
+        if not comments:
+            st.info("No comments to migrate.")
+
         conn.commit()
+        # ----- Migration Completed ------ #
+        progress_bar.progress(1.0, "✅ Migration complete!")
         st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
+        st.write(f"📦 Migrated {len(videos)} videos and {len(comments)} comments for '{selected_channel}'")
 
     except Exception as e:
         conn.rollback()
@@ -306,7 +350,7 @@ api_status = "Waiting for Test YouTube API Connection response..."
 if selected == "YDH_DB":
     selected = option_menu(
         menu_title="Youtube_Data_Harvesting_DataBase Menu",
-        options=["YT Channel Extractor", "Manage MongoDB", "Manage PostgreSQL", "Analyse Youtube Channel"],
+        options=["YT Channel Extractor", "Mongo Manager", "Postgres Manager", "YT Channel Analyzer"],
         icons=["database", "database-add", "gear"], menu_icon="database-gear",
         default_index=0, orientation="horizontal")
 
@@ -410,8 +454,8 @@ if selected == "YDH_DB":
                 st.error("Youtube Channel not found. Check the ID and try again. or failed to retrieve.", icon="🚨")
                 st.stop()
 
-    # ---------- Manage Harvested Youtube channels in MongoDB ----------- #
-    if selected == "Manage MongoDB":
+# ---------- Manage Harvested Youtube channels in MongoDB ----------- #
+    if selected == "Mongo Manager":
         st.markdown("### Manage MongoDB ")
         col1, col2, col3 = st.columns([4, 1, 2])
         with col1:
@@ -419,7 +463,7 @@ if selected == "YDH_DB":
             user_channels = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
             selected_channel_mongodb = st.selectbox("Select a Youtube channel", user_channels)
 
-        col4, col5, col6, col7 = st.columns([2, 2, 2, 1])
+        col4, col5, col6, _ = st.columns([1, 1, 3, 0.2])
         with col4:
             view_basic_channel_details = st.button("View Basic Detail")
 
@@ -447,8 +491,9 @@ if selected == "YDH_DB":
                 st.subheader("Comment Data")
                 st.dataframe(comments_df)
 
-    # ----------------- View Saved Channels and Migrate ---------------- #
-    if selected == "Manage PostgreSQL":
+    # ----------------- Migrate Channels to PostgreSQL ---------------- #
+    if selected == "Postgres Manager":
+        st.header("🛠️PostgreSQL Manager")
         st.markdown("### 🔍 Migrate Channel to PostgreSQL")
         # user_channels = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
         # collection_names = mg_yth_db.list_collection_names()
@@ -457,23 +502,23 @@ if selected == "YDH_DB":
         saved_collections = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
         channel_names = sorted([c.replace('_meta', '') for c in saved_collections])
         selected_channel = st.selectbox("Select a Youtube channel", channel_names)
-
+        # selected_channel = selected_channel.replace("", "_meta")
         # user_channels = sorted(set(name.rsplit('_', 1)[0] for name in collection_names if name.endswith('_meta')))
         # selected_channel = st.selectbox("Select a Youtube channel", channel_names)
-        if selected_channel:
-            meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
-            if not meta:
-                st.warning(f"No metadata found for channel:{selected_channel}. Check the ID and try again.")
-                st.stop()
+        # if selected_channel:
+        #     meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
+        #     if not meta:
+        #         st.warning(f"No metadata found for channel:{selected_channel}. Check the ID and try again.")
+        #         st.stop()
 
-            migrate_to_sql = st.button("Migrate Youtube Channel to PostgreSQL")
-            if migrate_to_sql:
-                conn = init_connection()
+        migrate_to_sql = st.button("Migrate YTC")
+        if migrate_to_sql:
+            with init_connection() as conn:
                 migrate_to_postgresql(conn, selected_channel, mg_yth_db)
 
 
     # ----------------- Analyse Youtube Channel ---------------- #
-    if selected == "Analyse Youtube Channel":
+    if selected == "YT Channel Analyzer":
         st.markdown("###")
 
 if selected == "Contact":
