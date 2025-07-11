@@ -24,7 +24,20 @@ from psycopg2 import DatabaseError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# --------------- YouTube API ------------------ #
+# ---------- YouTube API Management --------------- #
+# ---------- Safely Call Youtube API ------------- #
+# --------- Track API usage ---------- #
+api_counter = {"calls": 0}
+# --- Cached API Wrapper with Rate Limiting ---- #
+def safe_api_call(request_func, *args, **kwargs):
+    try:
+        api_counter["calls"] += 1
+        return request_func(*args, **kwargs)
+    except Exception as e:
+        if "quota" in str(e).lower():
+            st.error("⚠️ Quota Exceeded: API limit may have been reached.")
+        raise
+
 @st.cache_resource
 def get_youtube_api():
     try:
@@ -39,19 +52,6 @@ def get_youtube_api():
         st.stop()
 
 youtube_api = get_youtube_api()
-
-# -------------- Safely Call Youtube API -------------- #
-def safe_api_call(func, *args, retries=3, delay=2):
-    for i in range(retries):
-        try:
-            return func(*args)
-        except Exception as e:
-            time.sleep(delay)
-        except HttpError as e:
-            # status = e.resp.status
-            # error_msg = str(e)
-            time.sleep(delay)
-    return None
 
 # ----------- MongoDB Setup -------------- #
 # Refers Connection with MongoDB
@@ -249,13 +249,14 @@ def get_channel_stats(youtube_api, channel_id):
           Subscribers=response['items'][0]['statistics']['subscriberCount'],
           Views=response['items'][0]['statistics']['viewCount'],
           Total_videos=response['items'][0]['statistics']['videoCount'],
+          API_Calls=api_counter["calls"],
           playlist_id=response['items'][0]['contentDetails']['relatedPlaylists']['uploads'])
         return data
     except KeyError:
         return False
 
 # --------------------- Function to get Playlist Info ------------------------ #
-def get_playlist_info(youtube_api, playlist_id, playlist_channel_name, channel_id):
+def get_playlist_info(youtube_api, playlist_id, channel_name, channel_id):
     try:
         request = youtube_api.playlists().list(
             part='snippet,contentDetails,status',
@@ -268,7 +269,7 @@ def get_playlist_info(youtube_api, playlist_id, playlist_channel_name, channel_i
             playlist = {
                 "playlist_id": playlist_id,
                 "playlist_name": item['snippet']['title'],
-                "channel_name": playlist_channel_name,
+                "channel_name": channel_name,
                 "channel_id": channel_id,
                 "description": item['snippet'].get('description', ''),
                 "item_count": item['contentDetails'].get('itemCount', 0),
@@ -358,6 +359,7 @@ def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_
     return all_comments
 
 # ----------- Function to get all the channel video details -------------- #
+@st.cache_data(ttl=3600, show_spinner=False)
 def extract_channel_all_details(youtube_api, channel_id):
     # ---- Getting Channel Info ---- #
     progress_bar_extract = st.progress(0, text="📤 Starting Youtube channel Harvesting...")
@@ -371,8 +373,8 @@ def extract_channel_all_details(youtube_api, channel_id):
     progress_bar_extract.progress(0.1, "")
     with st.spinner('Fetching playlists statistics...'):
         playlist_id = channel_statistics.get('playlist_id')
-        playlist_channel_name = channel_statistics.get('channel_name')
-        playlist_id_statistics = get_playlist_info(youtube_api, playlist_id, playlist_channel_name, channel_id)
+        channel_name = channel_statistics.get('channel_name')
+        playlist_id_statistics = get_playlist_info(youtube_api, playlist_id, channel_name, channel_id)
         if not playlist_id_statistics:
             st.warning("⚠️ Playlist info retrieval failed.")
             return None
@@ -399,8 +401,19 @@ def extract_channel_all_details(youtube_api, channel_id):
         'Comment_info': comment_statistics,
         'Meta': {
             'Total Videos': len(video_statistics), 'Total Comments': len(comment_statistics)},
+        "API Calls": api_counter["calls"],
         'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
     }
+    # ------ Log success to MongoDB -------#
+    mg_yth_db["audit_logs"].insert_one({
+        "channel_id": channel_id,
+        "channel_name": channel_name,
+        "status": "success",
+        "api_calls": api_counter["calls"],
+        "video_count": len(video_statistics),
+        "comment_count": len(comment_statistics),
+        "timestamp": datetime.now().isoformat()
+    })
     return channel_data
 
 # ---------------------------------- Streamlit UI -------------------------------------- #
