@@ -141,8 +141,11 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
         if not meta:
             st.error(f"⚠️ No meta data found for the channel: {selected_channel}, Check the ID and try again.")
             return
-        playlists = list(mg_yth_db[f"{selected_channel}_playlists"].find()) if (f"{selected_channel}_playlists" in
-                                    mg_yth_db.list_collection_names()) else []
+        # playlists = list(mg_yth_db[f"{selected_channel}_playlists"].find()) if (f"{selected_channel}_playlists" in
+        #                             mg_yth_db.list_collection_names()) else []
+        playlists = list(mg_yth_db[f"{selected_channel}_playlist"].find())
+        for p in playlists:
+            p.pop("_id", None)
         videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
 
         comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
@@ -178,8 +181,8 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
         # --------------- Insert into channel_playlist ---------------- #
         progress_bar.progress(0.3, "🎞 Inserting video records...")
         if playlists:
-            playlist_rows = [(p.get("playlist_id"), p.get("playlist_title"), selected_channel, meta.get("Channel_id"),
-                    p.get("description", ""), p.get("item_count", 0), p.get("privacy_status", "public"),
+            playlist_rows = [(p.get("playlist_id"), p.get("playlist_title"), selected_channel, p.get("Channel_id"),
+                    p.get("description", ""), int(p.get("item_count", 0)), p.get("privacy_status", ""),
                     p.get("published_at"), datetime.now()) for p in playlists]
             with conn.cursor() as cur:
                 execute_values(cur, """INSERT INTO channel_playlist (playlist_id, playlist_Name, channel_name,
@@ -262,7 +265,7 @@ def get_playlist_info(youtube_api, playlist_id, channel_name, channel_id):
             part='snippet,contentDetails,status',
             id=playlist_id
         )
-        response = request.execute()
+        response = safe_api_call(request.execute)
 
         if response['items']:
             item = response['items'][0]
@@ -276,13 +279,42 @@ def get_playlist_info(youtube_api, playlist_id, channel_name, channel_id):
                 "privacy_status": item['status'].get('privacyStatus', 'public'),
                 "published_at": item['snippet'].get('publishedAt'),
                 "harvested_at": datetime.now().isoformat()
-            }
+            } # "API Calls": api_counter["calls"],
             return playlist
         else:
             return None
     except Exception as e:
         st.error(f"❌ Playlist fetching failed: {e}")
         return None
+
+def get_all_playlists_for_channel(youtube_api, channel_name, channel_id):
+    playlists = []
+    next_page_token = None
+    while True:
+        try:
+            request = youtube_api.playlists().list(
+                part='snippet,contentDetails,status',
+                channelId=channel_id,
+                maxResults=50, pageToken=next_page_token
+            )
+            response = safe_api_call(request.execute)
+            for item in response.get('items', []):
+                playlists.append({"playlist_id": item['id'], "playlist_name": item['snippet']['title'],
+                                  "channel_name": channel_name, "channel_id": channel_id,
+                                  "description": item['snippet'].get('description', ''),
+                                  "item_count": item['contentDetails'].get('itemCount', 0),
+                                  "privacy_status": item['status'].get('privacyStatus', 'public'),
+                                  "published_at": item['snippet'].get('publishedAt'),
+                                  "harvested_at": datetime.now().isoformat()
+                })
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
+
+        except Exception as e:
+            st.error(f"❌ Playlist fetching failed: {e}")
+            break
+    return playlists
 
 
 # --------------------- Function to get Video Stats -------------------------- #
@@ -360,11 +392,12 @@ def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_
 
 # ----------- Function to get all the channel video details -------------- #
 @st.cache_data(ttl=3600, show_spinner=False)
-def extract_channel_all_details(youtube_api, channel_id):
+def extract_channel_all_details(_youtube_api, channel_id):
     # ---- Getting Channel Info ---- #
     progress_bar_extract = st.progress(0, text="📤 Starting Youtube channel Harvesting...")
     with st.spinner('Fetching channel statistics...'):
-        channel_statistics = get_channel_stats(youtube_api, channel_id)
+        # ----- channel_statistics = get_channel_stats(youtube_api, channel_id)
+        channel_statistics = safe_api_call(get_channel_stats, youtube_api, channel_id)
         if not channel_statistics:
             st.warning("⚠️ Channel statistics not available.")
             return None
@@ -374,7 +407,8 @@ def extract_channel_all_details(youtube_api, channel_id):
     with st.spinner('Fetching playlists statistics...'):
         playlist_id = channel_statistics.get('playlist_id')
         channel_name = channel_statistics.get('channel_name')
-        playlist_id_statistics = get_playlist_info(youtube_api, playlist_id, channel_name, channel_id)
+        # ------- playlist_id_statistics = get_playlist_info(youtube_api, playlist_id, channel_name, channel_id)
+        playlist_id_statistics = safe_api_call(get_all_playlists_for_channel, youtube_api, channel_name, channel_id)
         if not playlist_id_statistics:
             st.warning("⚠️ Playlist info retrieval failed.")
             return None
@@ -382,7 +416,8 @@ def extract_channel_all_details(youtube_api, channel_id):
     # ---- Getting all videos ---- #
     progress_bar_extract.progress(0.25, "")
     with st.spinner('Fetching video statistics...'):
-        video_statistics = get_video_stats(youtube_api, playlist_id)
+        # -------- video_statistics = get_video_stats(youtube_api, playlist_id)
+        video_statistics = safe_api_call(get_video_stats, youtube_api, playlist_id)
         # Extract video IDs
         video_ids = [video.get('video_id') for video in video_statistics if video.get('video_id')]
 
@@ -392,7 +427,8 @@ def extract_channel_all_details(youtube_api, channel_id):
     # Showing Progress Indication for Each video / comments
     progress_bar_extract.progress(0.25, text="Fetching comments for each videos...")
     for i, vid in enumerate(video_ids):
-        comment_statistics += update_comment_stats(youtube_api, [vid], channel_statistics.get("Channel_name", "Unknown"))
+        # ------- comment_statistics += update_comment_stats(youtube_api, [vid], channel_statistics.get("Channel_name", "Unknown"))
+        comment_statistics += safe_api_call(update_comment_stats, youtube_api, vid, channel_statistics.get("Channel_name", "Unknown"), max_comments_per_video=50)
         progress_bar_extract.progress((i + 1) / len(video_ids), text=f"Fetched comments for video {i + 1}/{len(video_ids)}")
 
     # Pack into a single dictionary
@@ -507,8 +543,15 @@ if selected == "YDH_DB":
                     "Harvested_at": datetime.now().isoformat()})
 
                 # ---- Save separate playlist collection ---- #
-                mg_yth_db[f"{channel_name}_playlist"].delete_many({})
-                mg_yth_db[f"{channel_name}_playlist"].insert_one(extracted_data['Playlist_info'])
+                playlist_data = extracted_data.get('playlist_info')
+                if playlist_data:
+                    mg_yth_db[f"{channel_name}_playlist"].delete_many({})
+                    mg_yth_db[f"{channel_name}_playlist"].insert_one(playlist_data)
+                else:
+                    st.warning("⚠️ Playlist info not available for this channel.")
+
+                # mg_yth_db[f"{channel_name}_playlist"].delete_many({})
+                # mg_yth_db[f"{channel_name}_playlist"].insert_one(extracted_data['playlist_info'])
 
                 # ---- Save separate videos collection ---- #
                 mg_yth_db[f"{channel_name}_videos"].delete_many({})
