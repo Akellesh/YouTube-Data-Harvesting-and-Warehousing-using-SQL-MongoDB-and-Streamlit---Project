@@ -133,13 +133,13 @@ def create_postgrsql_tables(conn):
 # ---------- Insert Channel meta - PostgreSQL------------- #
 def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
     try:
-        create_postgrsql_tables(conn)
         progress_bar = st.progress(0, text="📤 Starting migration...")
+        create_postgrsql_tables(conn)
 
         # ------ Get MonngoDB Data ------ #
         meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
         if not meta:
-            st.error(f"⚠️ No metadata found for channel: {selected_channel}")
+            st.error(f"⚠️ No meta data found for the channel: {selected_channel}, Check the ID and try again.")
             return
         playlists = list(mg_yth_db[f"{selected_channel}_playlists"].find()) if (f"{selected_channel}_playlists" in
                                     mg_yth_db.list_collection_names()) else []
@@ -254,16 +254,46 @@ def get_channel_stats(youtube_api, channel_id):
     except KeyError:
         return False
 
+# --------------------- Function to get Playlist Info ------------------------ #
+def get_playlist_info(youtube_api, playlist_id, playlist_channel_name, channel_id):
+    try:
+        request = youtube_api.playlists().list(
+            part='snippet,contentDetails,status',
+            id=playlist_id
+        )
+        response = request.execute()
+
+        if response['items']:
+            item = response['items'][0]
+            playlist = {
+                "playlist_id": playlist_id,
+                "playlist_name": item['snippet']['title'],
+                "channel_name": playlist_channel_name,
+                "channel_id": channel_id,
+                "description": item['snippet'].get('description', ''),
+                "item_count": item['contentDetails'].get('itemCount', 0),
+                "privacy_status": item['status'].get('privacyStatus', 'public'),
+                "published_at": item['snippet'].get('publishedAt'),
+                "harvested_at": datetime.now().isoformat()
+            }
+            return playlist
+        else:
+            return None
+    except Exception as e:
+        st.error(f"❌ Playlist fetching failed: {e}")
+        return None
+
+
 # --------------------- Function to get Video Stats -------------------------- #
-def get_video_stats(youtube_api, playlist_id):
+def get_video_stats(youtube_api, playlist_id, max_results=50):
     videos = []
     next_page_token = None
     count = 0
 
     while True:
         playlist_response = youtube_api.playlistItems().list(part="contentDetails",playlistId=playlist_id,
-            maxResults=50,pageToken=next_page_token).execute()
-        # maxResults=min(max_results - count, 50)
+            maxResults=min(max_results - count, 50),pageToken=next_page_token).execute()
+
         video_ids = [item['contentDetails']['videoId'] for item in playlist_response['items']]
         count += len(video_ids)
 
@@ -303,7 +333,7 @@ def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_
 
             while True:
                 comment_response = youtube_api.commentThreads().list(part="snippet", videoId=video_id,
-                    maxResults=min(max_comments_per_video - count, 100), pageToken=next_page_token,
+                    maxResults=min(max_comments_per_video - count, 50), pageToken=next_page_token,
                     textFormat="plainText").execute()
 
                 for item in comment_response['items']:
@@ -329,35 +359,44 @@ def update_comment_stats(youtube_api, video_ids, channel_name, max_comments_per_
 
 # ----------- Function to get all the channel video details -------------- #
 def extract_channel_all_details(youtube_api, channel_id):
-    # Get channel info
+    # ---- Getting Channel Info ---- #
+    progress_bar_extract = st.progress(0, text="📤 Starting Youtube channel Harvesting...")
     with st.spinner('Fetching channel statistics...'):
         channel_statistics = get_channel_stats(youtube_api, channel_id)
         if not channel_statistics:
-            return None
-    with st.spinner('Fetching playlists...'):
-        playlist_id = channel_statistics.get('playlist_id')
-        if not playlist_id:
+            st.warning("⚠️ Channel statistics not available.")
             return None
 
-    # Get all videos
-    # Show Progress Indication
+    # ---- Getting Playlist Info ---- #
+    progress_bar_extract.progress(0.1, "")
+    with st.spinner('Fetching playlists statistics...'):
+        playlist_id = channel_statistics.get('playlist_id')
+        playlist_channel_name = channel_statistics.get('channel_name')
+        playlist_id_statistics = get_playlist_info(youtube_api, playlist_id, playlist_channel_name, channel_id)
+        if not playlist_id_statistics:
+            st.warning("⚠️ Playlist info retrieval failed.")
+            return None
+
+    # ---- Getting all videos ---- #
+    progress_bar_extract.progress(0.25, "")
     with st.spinner('Fetching video statistics...'):
         video_statistics = get_video_stats(youtube_api, playlist_id)
-
-    # Extract video IDs
-    video_ids = [video.get('video_id') for video in video_statistics if video.get('video_id')]
+        # Extract video IDs
+        video_ids = [video.get('video_id') for video in video_statistics if video.get('video_id')]
 
     # Get all comments
     comment_statistics = []
+
     # Showing Progress Indication for Each video / comments
-    progress_bar = st.progress(25, text="Fetching comments for each videos...")
+    progress_bar_extract.progress(0.25, text="Fetching comments for each videos...")
     for i, vid in enumerate(video_ids):
         comment_statistics += update_comment_stats(youtube_api, [vid], channel_statistics.get("Channel_name", "Unknown"))
-        progress_bar.progress((i + 1) / len(video_ids))
-    # comment_statistics = update_comment_stats(youtube, video_ids, channel_statistics.get("Channel_name", "Unknown_Channel"))
+        progress_bar_extract.progress((i + 1) / len(video_ids), text=f"Fetched comments for video {i + 1}/{len(video_ids)}")
+
     # Pack into a single dictionary
     channel_data = {
-        'Channel_info': channel_statistics, 'Video_info': video_statistics, 'Comment_info': comment_statistics,
+        'Channel_info': channel_statistics, 'playlist_info': playlist_id_statistics , 'Video_info': video_statistics,
+        'Comment_info': comment_statistics,
         'Meta': {
             'Total Videos': len(video_statistics), 'Total Comments': len(comment_statistics)},
         'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
@@ -445,28 +484,32 @@ if selected == "YDH_DB":
                 if not channel_name:
                     st.error("❌ Channel name is missing in extracted data. Cannot proceed with storage.")
                     st.stop()
-                # Separate Collections for channel, videos, comments
-                # Save metadata with timestamp
+
+                # ---- Separate MongoDB Collections for channel, playlist, videos, comments ---- #
+                # ---- Save metadata with timestamp ---- #
                 mg_yth_db[f"{channel_name}_meta"].delete_many({})
                 mg_yth_db[f"{channel_name}_meta"].insert_one({
                     "Channel_name": extracted_data.get('Channel_name'), "Subscribers": extracted_data.get('Subscribers'),
                     "Views": extracted_data.get('Views'), "Total_videos": extracted_data.get('Total_videos'),
                     "Harvested_at": datetime.now().isoformat()})
 
-                # Save videos
+                # ---- Save separate playlist collection ---- #
+                mg_yth_db[f"{channel_name}_playlist"].delete_many({})
+                mg_yth_db[f"{channel_name}_playlist"].insert_one(extracted_data['Playlist_info'])
+
+                # ---- Save separate videos collection ---- #
                 mg_yth_db[f"{channel_name}_videos"].delete_many({})
                 if 'Video_info' in extracted_data and extracted_data['Video_info']:
                     mg_yth_db[f"{channel_name}_videos"].insert_many(extracted_data['Video_info'])
 
-                # Save comments
+                # ---- Save separate comments collection ---- #
                 mg_yth_db[f"{channel_name}_comments"].delete_many({})
                 if 'Comment_info' in extracted_data and extracted_data['Comment_info']:
                     mg_yth_db[f"{channel_name}_comments"].insert_many(extracted_data['Comment_info'])
 
-
                 st.success("✅ Harvest complete and saved to MongoDB")
 
-                # Summary
+                # ---- Summary ---- #
                 st.write(f"📺 Channel: {channel_name}")
                 st.write(f"🎞️ Videos: {len(extracted_data.get('Video_info', []))}")
                 st.write(f"💬 Comments: {len(extracted_data.get('Comment_info', []))}")
@@ -536,22 +579,9 @@ if selected == "YDH_DB":
     if selected == "Postgres Manager":
         st.header("🛠️PostgreSQL Manager")
         st.markdown("### 🔍 Migrate Channel to PostgreSQL")
-        # user_channels = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
-        # collection_names = mg_yth_db.list_collection_names()
-        # selected_collection = st.selectbox("", user_channels)
-
         saved_collections = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
         channel_names = sorted([c.replace('_meta', '') for c in saved_collections])
         selected_channel = st.selectbox("Select a Youtube channel", channel_names)
-        # selected_channel = selected_channel.replace("", "_meta")
-        # user_channels = sorted(set(name.rsplit('_', 1)[0] for name in collection_names if name.endswith('_meta')))
-        # selected_channel = st.selectbox("Select a Youtube channel", channel_names)
-        # if selected_channel:
-        #     meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
-        #     if not meta:
-        #         st.warning(f"No metadata found for channel:{selected_channel}. Check the ID and try again.")
-        #         st.stop()
-
         migrate_to_sql = st.button("Migrate YTC")
         if migrate_to_sql:
             with init_connection() as conn:
