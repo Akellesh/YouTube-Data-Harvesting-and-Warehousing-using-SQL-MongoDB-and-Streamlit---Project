@@ -13,6 +13,8 @@ import streamlit as st
 from streamlit.runtime.caching import save_media_data
 from streamlit_option_menu import option_menu
 import plotly.express as px
+from concurrent.futures import ThreadPoolExecutor
+import traceback
 
 # --------- Import Packages for DB --------- #
 from pymongo import MongoClient, errors
@@ -448,7 +450,7 @@ def update_comment_stats(_youtube_api, video_ids, channel_name, max_comments_per
 
             while True:
                 comment_response = youtube_api.commentThreads().list(part="snippet", videoId=video_id,
-                    maxResults=min(max_comments_per_video - count, 10), pageToken=next_page_token,
+                    maxResults=min(max_comments_per_video - count, 20), pageToken=next_page_token,
                     textFormat="plainText").execute()
 
                 for item in comment_response['items']:
@@ -471,6 +473,21 @@ def update_comment_stats(_youtube_api, video_ids, channel_name, max_comments_per
             continue
 
     return all_comments
+
+# --- Batched and Parallel Comment Fetch ---
+def batch_comment_fetch(youtube_api, video_ids, channel_name):
+    comment_data = []
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = []
+        for i in range(0, len(video_ids), 5):  # batch size
+            batch = video_ids[i:i + 5]
+            futures.append(executor.submit(update_comment_stats, youtube_api, batch, channel_name))
+        for f in futures:
+            try:
+                comment_data += f.result()
+            except Exception as e:
+                st.warning(f"⚠️ Comment fetch error: {e}")
+    return comment_data
 
 # ----------- Function to get all the channel video details -------------- #
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -517,25 +534,31 @@ def extract_channel_all_details(_youtube_api, channel_id):
 
     # ---- New method ---- #
     with st.spinner('📂 Fetching all playlists and videos...'):
+        progress_bar_extract.progress(0.10, "")
         all_videos, all_playlists = get_all_playlist_videos(youtube_api, channel_id)
         video_ids = [v.get("video_id") for v in all_videos if v.get("video_id")]
 
     # Get all comments
-    comment_statistics = []
+    # comment_statistics = []
 
     # Showing Progress Indication for Each video / comments
-    progress_bar_extract.progress(0.6, text="Fetching comments for each videos...")
-    for i, vid in enumerate(video_ids):
-        # ------- comment_statistics += update_comment_stats(youtube_api, [vid], channel_statistics.get("Channel_name", "Unknown"))
-        comment_statistics += safe_api_call(update_comment_stats, _youtube_api, vid, channel_statistics.get("Channel_name", "Unknown"), max_comments_per_video=50)
-        progress_bar_extract.progress((i + 1) / len(video_ids), text=f"Fetched comments for video {i + 1}/{len(video_ids)}")
+    # progress_bar_extract.progress(0.6, text="Fetching comments for each videos...")
+    # for i, vid in enumerate(video_ids):
+    #     # ------- comment_statistics += update_comment_stats(youtube_api, [vid], channel_statistics.get("Channel_name", "Unknown"))
+    #     comment_statistics += safe_api_call(update_comment_stats, _youtube_api, vid, channel_statistics.get("Channel_name", "Unknown"), max_comments_per_video=50)
+    #     progress_bar_extract.progress((i + 1) / len(video_ids), text=f"Fetched comments for video {i + 1}/{len(video_ids)}")
+
+    with st.spinner('💬 Fetching all comments (batch + parallel)...'):
+        progress_bar_extract.progress(0.6, text="Fetching comments for each videos...")
+        comment_data = batch_comment_fetch(youtube_api, video_ids, channel_name)
+
 
     # Pack into a single dictionary
     channel_data = {
         'Channel_info': channel_statistics, 'playlist_info': all_playlists , 'Video_info': all_videos,
-        'Comment_info': comment_statistics,
+        'Comment_info': comment_data,
         'Meta': {
-            'Total Videos': len(all_videos), 'Total Comments': len(comment_statistics)},
+            'Total Videos': len(all_videos), 'Total Comments': len(comment_data)},
         "API Calls": api_counter["calls"],
         'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
     }
@@ -546,7 +569,7 @@ def extract_channel_all_details(_youtube_api, channel_id):
         "status": "success",
         "api_calls": api_counter["calls"],
         "video_count": len(all_videos),
-        "comment_count": len(comment_statistics),
+        "comment_count": len(comment_data),
         "timestamp": datetime.now().isoformat()
     })
     return channel_data
@@ -703,7 +726,8 @@ if selected == "YDH_DB":
                     if isinstance(comments, list):
                         mg_yth_db[f"{channel_name}_comments"].insert_many(comments)
                     elif isinstance(comments, dict):
-                        mg_yth_db[f"{channel_name}_comments"].insert_one(comments)
+                        # mg_yth_db[f"{channel_name}_comments"].insert_one(comments)
+                        mg_yth_db[f"{channel_name}_comments"].insert_many(comments)
                     else:
                         st.warning("⚠️ Unexpected format in Comment_info.")
                 st.success("✅ Harvest complete and saved to MongoDB")
