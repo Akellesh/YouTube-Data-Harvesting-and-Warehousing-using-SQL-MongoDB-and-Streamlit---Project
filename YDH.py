@@ -440,7 +440,7 @@ def get_all_playlist_videos(_youtube_api, channel_id):
 
 # --------------------- Function to get Comments Stats --------------------- #
 @st.cache_data
-def update_comment_stats(_youtube_api, video_ids, channel_name, max_comments_per_video=10):
+def update_comment_stats(_youtube_api, video_ids, channel_name, max_comments_per_video=50):
     all_comments = []
 
     for video_id in video_ids:
@@ -450,7 +450,7 @@ def update_comment_stats(_youtube_api, video_ids, channel_name, max_comments_per
 
             while True:
                 comment_response = youtube_api.commentThreads().list(part="snippet", videoId=video_id,
-                    maxResults=min(max_comments_per_video - count, 20), pageToken=next_page_token,
+                    maxResults=min(max_comments_per_video - count, 50), pageToken=next_page_token,
                     textFormat="plainText").execute()
 
                 for item in comment_response['items']:
@@ -474,91 +474,91 @@ def update_comment_stats(_youtube_api, video_ids, channel_name, max_comments_per
 
     return all_comments
 
-# --- Batched and Parallel Comment Fetch ---
-def batch_comment_fetch(youtube_api, video_ids, channel_name):
-    comment_data = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = []
-        for i in range(0, len(video_ids), 5):  # batch size
-            batch = video_ids[i:i + 5]
-            futures.append(executor.submit(update_comment_stats, youtube_api, batch, channel_name))
-        for f in futures:
-            try:
-                comment_data += f.result()
-            except Exception as e:
-                st.warning(f"⚠️ Comment fetch error: {e}")
-    return comment_data
-
 # ----------- Function to get all the channel video details -------------- #
 @st.cache_data(ttl=3600, show_spinner=False)
-def extract_channel_all_details(_youtube_api, channel_id):
-    # ---- Getting Channel Info ---- #
-    progress_bar_extract = st.progress(0, text="📤 Starting Youtube channel Harvesting...")
+def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_only=True, store_to_pg=False):
+    # ---- 1. Getting Channel Statistics ---- #
+    progress_bar_extract = st.progress(0.0, text="📤 Starting Youtube channel Harvesting...")
     with st.spinner('Fetching channel statistics...'):
-        # ----- channel_statistics = get_channel_stats(youtube_api, channel_id)
         channel_statistics = safe_api_call(get_channel_stats, _youtube_api, channel_id)
         if not channel_statistics:
             st.warning("⚠️ Channel statistics not available.")
             return None
-        channel_name = channel_statistics.get('Channel_name')
-    # ----- Old method ---- #
-    # # ---- Getting Playlist Info ---- #
-    # progress_bar_extract.progress(0.1, "")
-    # with st.spinner('Fetching playlists statistics...'):
-    #     # playlist_id = channel_statistics.get('playlist_id')
-    #     channel_name = channel_statistics.get('Channel_name')
-    #     # ------- playlist_id_statistics = get_playlist_info(youtube_api, playlist_id, channel_name, channel_id)
-    #     playlist_id_statistics = safe_api_call(get_all_playlists_for_channel, _youtube_api, channel_name, channel_id)
-    #     if not playlist_id_statistics:
-    #         st.warning("⚠️ Playlist info retrieval failed.")
-    #         return None
-    #
-    # # ---- Getting all videos ---- #
-    # progress_bar_extract.progress(0.25, "")
-    # with st.spinner('Fetching video statistics for all playlists...'):
-    #
-    #     # video_statistics = safe_api_call(get_video_stats, _youtube_api, playlist_id)
-    #     # # Extract video IDs
-    #     # video_ids = [video.get('video_id') for video in video_statistics if video.get('video_id')]
-    #     video_statistics = []
-    #     video_ids = []
-    #
-    #     for i, playlist in enumerate(playlist_id_statistics):
-    #         pid = playlist.get("playlist_id")
-    #         if pid:
-    #             videos = safe_api_call(get_video_stats, _youtube_api, pid)
-    #             if videos:
-    #                 video_statistics.extend(videos)
-    #                 video_ids.extend([video.get('video_id') for video in videos if video.get('video_id')])
-    #         progress_bar_extract.progress(0.25 + (i + 1) / (len(playlist_id_statistics) * 4), text=f"Fetched from playlist {i+1}/{len(playlist_id_statistics)}")
+        # uploads_playlist_id = channel_statistics.get('playlist_id') # This is the uploads playlist
+        channel_name = channel_statistics.get("Channel_name", "Unknown")
+        if not channel_name:
+            st.error("❌ Channel name missing. Cannot continue.")
+            return None
+    progress_bar_extract.progress(0.05, "✅ Channel stats fetched...")
 
-    # ---- New method ---- #
-    with st.spinner('📂 Fetching all playlists and videos...'):
-        progress_bar_extract.progress(0.10, "")
-        all_videos, all_playlists = get_all_playlist_videos(youtube_api, channel_id)
-        video_ids = [v.get("video_id") for v in all_videos if v.get("video_id")]
+    # ---- 2. Fetch Playlist and Videos ---- #
+    all_playlists = []
+    all_videos = []
 
-    # Get all comments
-    # comment_statistics = []
+    if use_uploaded_playlist_only:
+        with st.spinner("📂 Fetching videos from uploads playlist..."):
+            progress_bar_extract.progress(0.10, "Fetching all uploaded videos...")
+            uploads_playlist_id = channel_statistics.get("playlist_id")
+            all_playlists = [{
+                "playlist_id": uploads_playlist_id,
+                "playlist_name": "Uploads",
+                "description": "Default upload playlist",
+                "item_count": channel_statistics.get("Total_videos", 0),
+                "privacy_status": "public",
+                "published_at": channel_statistics.get("published_at", "")
+            }]
+            videos = safe_api_call(get_video_stats, _youtube_api, uploads_playlist_id)
+            if videos:
+                all_videos.extend(videos)
+        progress_bar_extract.progress(0.30, "✅ All Uploaded videos fetched.")
+    else:
+        with st.spinner("📂 Fetching all playlists and their videos..."):
+            progress_bar_extract.progress(0.10, "Fetching all playlists and their videos...")
+            playlists = safe_api_call(get_all_playlists_for_channel, _youtube_api, channel_name, channel_id)
+            if not playlists:
+                st.warning("⚠️ No playlists found.")
+                return None
+            all_playlists.extend(playlists)
 
-    # Showing Progress Indication for Each video / comments
-    # progress_bar_extract.progress(0.6, text="Fetching comments for each videos...")
-    # for i, vid in enumerate(video_ids):
-    #     # ------- comment_statistics += update_comment_stats(youtube_api, [vid], channel_statistics.get("Channel_name", "Unknown"))
-    #     comment_statistics += safe_api_call(update_comment_stats, _youtube_api, vid, channel_statistics.get("Channel_name", "Unknown"), max_comments_per_video=50)
-    #     progress_bar_extract.progress((i + 1) / len(video_ids), text=f"Fetched comments for video {i + 1}/{len(video_ids)}")
+            total_playlists = len(playlists)
+            for idx, playlist in enumerate(playlists):
+                pid = playlist.get("playlist_id")
+                videos = safe_api_call(get_video_stats, _youtube_api, pid)
+                if videos:
+                    all_videos.extend(videos)
+                pct = 0.11 + (0.20 * ((idx + 1) / total_playlists))
+                progress_bar_extract.progress(pct, f"Fetched videos from playlist {idx + 1}/{total_playlists}")
+        progress_bar_extract.progress(0.30, "✅ All playlists and their videos fetched.")
 
-    with st.spinner('💬 Fetching all comments (batch + parallel)...'):
-        progress_bar_extract.progress(0.6, text="Fetching comments for each videos...")
-        comment_data = batch_comment_fetch(youtube_api, video_ids, channel_name)
+    # ----3. Fetch comments for each Video ------ #
+    video_ids = [v.get("video_id") for v in all_videos if v.get("video_id")]
+    comment_statistics = []
+
+    if video_ids:
+        with st.spinner("💬 Fetching comments for each video..."):
+            for i, vid in enumerate(video_ids):
+                comments = safe_api_call(
+                    update_comment_stats,
+                    _youtube_api,
+                    vid,
+                    channel_name,
+                    max_comments_per_video=50
+                )
+                if comments:
+                    comment_statistics.extend(comments)
+                progress = 0.30 + (0.60 * ((i + 1) / len(video_ids)))
+                progress_bar_extract.progress(progress, f"Fetched comments for video {i + 1}/{len(video_ids)}")
+        progress_bar_extract.progress(0.90, "✅ Comments for all videos fetched.")
+    else:
+        st.warning("⚠️ No videos found.")
 
 
     # Pack into a single dictionary
     channel_data = {
         'Channel_info': channel_statistics, 'playlist_info': all_playlists , 'Video_info': all_videos,
-        'Comment_info': comment_data,
+        'Comment_info': comment_statistics,
         'Meta': {
-            'Total Videos': len(all_videos), 'Total Comments': len(comment_data)},
+            'Total Videos': len(all_videos), 'Total Comments': len(comment_statistics)},
         "API Calls": api_counter["calls"],
         'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
     }
@@ -569,9 +569,50 @@ def extract_channel_all_details(_youtube_api, channel_id):
         "status": "success",
         "api_calls": api_counter["calls"],
         "video_count": len(all_videos),
-        "comment_count": len(comment_data),
+        "comment_count": len(comment_statistics),
         "timestamp": datetime.now().isoformat()
     })
+
+    # --- 6. Store Basic Details to PostgreSQL Bypass MongoDB  --- #
+    if store_to_pg:
+        meta_rows = [(channel_statistics.get("channel_id"),
+            channel_statistics.get("Channel_name"), channel_statistics.get("Subscribers"),
+            channel_statistics.get("Views"), channel_statistics.get("Total_videos"), datetime.now())]
+
+        with pg_conn.cursor() as cur:
+            cur.execute("""
+                        CREATE TABLE IF NOT EXISTS channel_table(channel_id
+                            TEXT PRIMARY KEY, channel_name
+                            TEXT,
+                            subscribers
+                            INTEGER,
+                            channnel_views
+                            INTEGER,
+                            total_videos
+                            INTEGER,
+                            harvested_time
+                            TIMESTAMP
+                        );
+                        """)
+            cur.execute("""
+                        INSERT INTO channel_table (channel_id, channel_name, subscribers, channnel_views, total_videos,
+                                                   harvested_time)
+                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO
+                        UPDATE SET
+                            channel_name = EXCLUDED.channel_name,
+                            subscribers = EXCLUDED.subscribers,
+                            channnel_views = EXCLUDED.channnel_views,
+                            total_videos = EXCLUDED.total_videos,
+                            harvested_time = EXCLUDED.harvested_time;
+                        """, meta_rows[0])
+            pg_conn.commit()
+
+    # --- 7. Offer JSON Export --- #
+    st.download_button(label="📦 Download JSON Backup",
+        data=json.dumps(channel_data, indent=2, default=str),
+        file_name=f"{channel_name}_backup.json", mime="application/json")
+
+    st.success("✅ Harvest complete and stored successfully.")
     return channel_data
 
 # ---------------------------------- Streamlit UI -------------------------------------- #
