@@ -510,7 +510,7 @@ def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_
             videos = safe_api_call(get_video_stats, _youtube_api, uploads_playlist_id)
             if videos:
                 all_videos.extend(videos)
-        progress_bar_extract.progress(0.30, "✅ All Uploaded videos fetched.")
+        progress_bar_extract.progress(0.40, "✅ All Uploaded videos fetched.")
     else:
         with st.spinner("📂 Fetching all playlists and their videos..."):
             progress_bar_extract.progress(0.10, "Fetching all playlists and their videos...")
@@ -528,7 +528,7 @@ def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_
                     all_videos.extend(videos)
                 pct = 0.11 + (0.20 * ((idx + 1) / total_playlists))
                 progress_bar_extract.progress(pct, f"Fetched videos from playlist {idx + 1}/{total_playlists}")
-        progress_bar_extract.progress(0.30, "✅ All playlists and their videos fetched.")
+        progress_bar_extract.progress(0.40, "✅ All playlists and their videos fetched.")
 
     # ----3. Fetch comments for each Video ------ #
     video_ids = [v.get("video_id") for v in all_videos if v.get("video_id")]
@@ -537,13 +537,8 @@ def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_
     if video_ids:
         with st.spinner("💬 Fetching comments for each video..."):
             for i, vid in enumerate(video_ids):
-                comments = safe_api_call(
-                    update_comment_stats,
-                    _youtube_api,
-                    vid,
-                    channel_name,
-                    max_comments_per_video=50
-                )
+                comments = safe_api_call(update_comment_stats,_youtube_api, vid, channel_name,
+                                         max_comments_per_video=50)
                 if comments:
                     comment_statistics.extend(comments)
                 progress = 0.30 + (0.60 * ((i + 1) / len(video_ids)))
@@ -553,7 +548,7 @@ def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_
         st.warning("⚠️ No videos found.")
 
 
-    # Pack into a single dictionary
+    # ----- Pack into a single dictionary ----- #
     channel_data = {
         'Channel_info': channel_statistics, 'playlist_info': all_playlists , 'Video_info': all_videos,
         'Comment_info': comment_statistics,
@@ -575,37 +570,19 @@ def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_
 
     # --- 6. Store Basic Details to PostgreSQL Bypass MongoDB  --- #
     if store_to_pg:
-        meta_rows = [(channel_statistics.get("channel_id"),
-            channel_statistics.get("Channel_name"), channel_statistics.get("Subscribers"),
+        meta_rows = [(channel_statistics.get("channel_id"), channel_statistics.get("Channel_name"),
+                      channel_statistics.get("Subscribers"),
             channel_statistics.get("Views"), channel_statistics.get("Total_videos"), datetime.now())]
 
-        with pg_conn.cursor() as cur:
-            cur.execute("""
-                        CREATE TABLE IF NOT EXISTS channel_table(channel_id
-                            TEXT PRIMARY KEY, channel_name
-                            TEXT,
-                            subscribers
-                            INTEGER,
-                            channnel_views
-                            INTEGER,
-                            total_videos
-                            INTEGER,
-                            harvested_time
-                            TIMESTAMP
-                        );
-                        """)
-            cur.execute("""
-                        INSERT INTO channel_table (channel_id, channel_name, subscribers, channnel_views, total_videos,
-                                                   harvested_time)
-                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO
-                        UPDATE SET
-                            channel_name = EXCLUDED.channel_name,
-                            subscribers = EXCLUDED.subscribers,
-                            channnel_views = EXCLUDED.channnel_views,
-                            total_videos = EXCLUDED.total_videos,
-                            harvested_time = EXCLUDED.harvested_time;
-                        """, meta_rows[0])
-            pg_conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS channel_table_direct (channel_id TEXT PRIMARY KEY, channel_name TEXT, 
+                        subscribers INTEGER, channnel_views INTEGER, total_videos INTEGER, harvested_time TIMESTAMP);""")
+            cur.execute("""INSERT INTO channel_table_direct (channel_id, channel_name, subscribers, channnel_views, total_videos,
+                        harvested_time) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO UPDATE SET
+                            channel_name = EXCLUDED.channel_name, subscribers = EXCLUDED.subscribers,
+                            channnel_views = EXCLUDED.channnel_views, total_videos = EXCLUDED.total_videos,
+                            harvested_time = EXCLUDED.harvested_time;""", meta_rows[0])
+            conn.commit()
 
     # --- 7. Offer JSON Export --- #
     st.download_button(label="📦 Download JSON Backup",
@@ -613,6 +590,7 @@ def extract_channel_all_details(_youtube_api, channel_id, use_uploaded_playlist_
         file_name=f"{channel_name}_backup.json", mime="application/json")
 
     st.success("✅ Harvest complete and stored successfully.")
+    progress_bar_extract.progress(1.00, "✅ Harvest complete and stored successfully.")
     return channel_data
 
 # ---------------------------------- Streamlit UI -------------------------------------- #
@@ -638,7 +616,21 @@ with st.sidebar:
             "nav-link-selected": {"background-color": "grey"},
         },
     )
-api_status = "Waiting for Test YouTube API Connection response..."
+
+# Set default value for api_status on first run
+if "api_status" not in st.session_state:
+    st.session_state.api_status = "🕒 Waiting for Test YouTube API Connection response..."
+
+# Initialize session state variable on first run
+if "tested_channel_name" not in st.session_state:
+    st.session_state.tested_channel_name = "No Channel to Display"
+# Initialize quota tracking on first run
+if "quota_used" not in st.session_state:
+    st.session_state.quota_used = 0
+def update_quota(units_used, endpoint=""):
+    st.session_state.quota_used += units_used
+    # print(f"🧮 Used {units_used} units for {endpoint}. Total quota used: {st.session_state.quota_used}")
+
 if selected == "YDH_DB":
     selected = option_menu(
         menu_title="Youtube_Data_Harvesting_DataBase Menu",
@@ -648,52 +640,52 @@ if selected == "YDH_DB":
 
     # ----------------- Search and Extract Youtube Channel ---------------- #
     if selected == "YT Channel Extractor":
-        st.markdown("### 🔍 Test YouTube API Key")
+        st.markdown("### API Key Check")
         # api_status = "Waiting for Test YouTube API Connection response..."
-        if st.button("Test YouTube API Connection"):
-            try:
-                # Try a basic call using Google Developers Channel ID
-                test_channel_id = "UC_x5XG1OV2P6uZZ5FSM9Ttw"
-                response = youtube_api.channels().list(part="snippet", id=test_channel_id).execute()
+        col1, col2 = st.columns([1,3])
+        with col1:
+            if st.button("Test YouTube API Connection Status"):
+                try:
+                    # Try a basic call using Google Developers Channel ID
+                    test_channel_id = "UC_x5XG1OV2P6uZZ5FSM9Ttw"
+                    response = youtube_api.channels().list(part="snippet", id=test_channel_id).execute()
+                    # Track the quota (channels.list = 1 unit)
+                    update_quota(1, endpoint="channels.list")
 
-                channel_info = response['items'][0]['snippet']
-                # st.success("✅ YouTube API key is valid!")
-                api_status = "✅ YouTube API key is valid, API connection is established!"
-                # st.write(f"**Channel Name:** {channel_info['title']}")
-                # st.write(f"**Description:** {channel_info['description'][:150]}...")
+                    channel_info = response['items'][0]['snippet']
+                    # test_channel_name = st.write(f"**Channel Name:** {channel_info['title']}")
+                    test_channel_name = channel_info.get('title')
+                    # st.success("✅ YouTube API key is valid!")
+                    st.session_state.api_status = "✅ YouTube API key is valid, API connection is established!, Good to Process..."
+                    st.session_state.tested_channel_name = test_channel_name  # ✅ Store tested channel name
 
-            except Exception as e:
-                st.error(f"❌ YouTube API test failed: {e}")
+                except Exception as e:
+                    st.session_state.api_status = st.error(f"❌ YouTube API test failed: {e}")
+                    st.session_state.tested_channel_name = "No Channel to Display"  # Clear it if failed
+        with col2:
+            if st.button("Reset YouTube API Connection Status"):
+                st.session_state.api_status = "🕒 Waiting for Test YouTube API Connection response..."
+                st.session_state.tested_channel_name = "No Channel to Display"
 
         col1, col2, col3 = st.columns([4, 1, 2])
         with col1:
-
+            st.markdown(st.session_state.api_status)
+            # Show tested channel name if available
+            if "tested_channel_name" in st.session_state and st.session_state.tested_channel_name:
+                st.markdown(f"**Tested Channel Name:** `{st.session_state.tested_channel_name}`")
             st.subheader("🔍 Enter Channel Id:")
             channel_id = st.text_input("")
-            st.markdown(api_status)
+
         col4, col5, col6, col7 = st.columns([4, 4, 3, 3])
         with col4:
             Search = st.button("Search Youtube Channel")
 
         with col5:
             Extract = st.button("Extract Youtube Channel")
+            store_pgsql = st.checkbox("📦 Store extracted data in PostgreSQL")
+            export_json = st.checkbox("🗃️ Export data as JSON")
 
-        # with st.form("channel_input_form"):
-        #     channel_id = st.text_input("🔎 Enter Channel ID")
-        #
-        #     col1, col2 = st.columns([1, 1])
-        #     with col1:
-        #         Search = st.form_submit_button("Search Youtube Channel")
-        #     with col2:
-        #         Extract = st.form_submit_button("Extract Youtube Channel")
-        #
-        #     if Search and not channel_id:
-        #         st.warning("⚠️ Please enter a Channel ID to continue.")
-        #
-        #     if Extract and not channel_id:
-        #         st.warning("⚠️ Please enter a Channel ID to continue.")
-
-        if Search:
+        if Search and channel_id:
 
             view_data = safe_api_call(get_channel_stats,youtube_api, channel_id)
             if view_data:
@@ -703,8 +695,10 @@ if selected == "YDH_DB":
                 # st.table(view_data_df)
             else:
                 st.error("Youtube Channel not found. Check the ID and try again.", icon="🚨")
+        elif Search and not channel_id:
+            st.warning("⚠️ Please enter a Channel ID to search.")
 
-        if Extract:
+        if Extract and channel_id:
             # extracted_data = safe_api_call(extract_channel_all_details,youtube_api, channel_id)
             # st.markdown(api_status)
             # extracted_data = extract_channel_all_details(youtube_api, channel_id)
@@ -805,6 +799,8 @@ if selected == "YDH_DB":
             else:
                 st.error("Youtube Channel not found. Check the ID and try again. or failed to retrieve.", icon="🚨")
                 st.stop()
+        elif Extract and not channel_id:
+            st.warning("⚠️ Please enter a Channel ID to extract.")
 
 # ---------- Manage Harvested Youtube channels in MongoDB ----------- #
     if selected == "Mongo Manager":
