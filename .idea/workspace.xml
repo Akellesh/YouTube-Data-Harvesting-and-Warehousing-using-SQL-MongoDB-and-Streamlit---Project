@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a49b2a1c-b341-4b20-bafa-f53e7a195125" name="Changes" comment="Perfecting - API key check - section.">
+    <list default="true" id="a49b2a1c-b341-4b20-bafa-f53e7a195125" name="Changes" comment="Revamp safe api call, api counter, api quota display, correction in Plot chart section, revamp all youtube data extraction function with new safe api call function.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/YDH.py" beforeDir="false" afterPath="$PROJECT_DIR$/YDH.py" afterDir="false" />
     </list>
@@ -93,7 +93,7 @@
       <workItem from="1752497544062" duration="8717000" />
       <workItem from="1752567163325" duration="14500000" />
       <workItem from="1752634649353" duration="19193000" />
-      <workItem from="1752676287632" duration="21369000" />
+      <workItem from="1752676287632" duration="32017000" />
     </task>
     <task id="LOCAL-00001" summary="Initial Commit">
       <option name="closed" value="true" />
@@ -295,7 +295,15 @@
       <option name="project" value="LOCAL" />
       <updated>1752651338987</updated>
     </task>
-    <option name="localTasksCounter" value="26" />
+    <task id="LOCAL-00026" summary="Revamp safe api call, api counter, api quota display, correction in Plot chart section, revamp all youtube data extraction function with new safe api call function.">
+      <option name="closed" value="true" />
+      <created>1752707862194</created>
+      <option name="number" value="00026" />
+      <option name="presentableId" value="LOCAL-00026" />
+      <option name="project" value="LOCAL" />
+      <updated>1752707862194</updated>
+    </task>
+    <option name="localTasksCounter" value="27" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -332,7 +340,8 @@
     <MESSAGE value="Created get_all_playlists_for_channel function." />
     <MESSAGE value="modification done." />
     <MESSAGE value="Perfecting - API key check - section." />
-    <option name="LAST_COMMIT_MESSAGE" value="Perfecting - API key check - section." />
+    <MESSAGE value="Revamp safe api call, api counter, api quota display, correction in Plot chart section, revamp all youtube data extraction function with new safe api call function." />
+    <option name="LAST_COMMIT_MESSAGE" value="Revamp safe api call, api counter, api quota display, correction in Plot chart section, revamp all youtube data extraction function with new safe api call function." />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Youtube_Data_Harvesting$YDH.coverage" NAME="YDH Coverage Results" MODIFIED="1751632541089" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

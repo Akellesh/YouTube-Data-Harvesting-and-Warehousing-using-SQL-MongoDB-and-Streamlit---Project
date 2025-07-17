@@ -162,6 +162,10 @@ def init_connection():
 
 # conn = init_connection()
 
+def is_valid_video_id(video_id):
+    """Validate YouTube video ID: exactly 11 characters (letters, digits, - or _)."""
+    return bool(re.fullmatch(r"[a-zA-Z0-9_-]{11}", video_id))
+
 def parse_duration_to_hms(duration_str):
     try:
         duration = isodate.parse_duration(duration_str)
@@ -175,22 +179,27 @@ def parse_duration_to_hms(duration_str):
 
 
 # ---------------- PostgreSQL - DB Operations ---------------- #
-def store_postgresql_direct(data):
+def store_postgresql_direct(conn, data):
     with st.spinner("🔧 Creating PostgreSQL Channel Info Basic table for direct Information Storing..."):
         try:
-            with conn.cur() as cur:
+            with conn.cursor() as cur:
                 # Insert into channel table
                 ch_basic = data.get('Channel_info', {})
+                channel_id = ch_basic.get("Channel_Id")
+                if not channel_id:
+                    st.error("❌ Channel_Id is missing. Skipping database insert.")
+                    return
                 cur.execute("""CREATE TABLE IF NOT EXISTS channel_table_direct (channel_id VARCHAR(50) PRIMARY KEY, 
                     channel_name VARCHAR(50), subscribers INT, channel_views INT, total_videos INT,
                     harvested_time TIMESTAMP);""")
-                cur.execute("""INSERT INTO channel_table_direct (channel_id, channel_name, subscribers, channnel_views, 
+                cur.execute("""INSERT INTO channel_table_direct (channel_id, channel_name, subscribers, channel_views, 
                     total_videos, harvested_time) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO UPDATE SET 
                     channel_name = EXCLUDED.channel_name, subscribers = EXCLUDED.subscribers, 
-                    channnel_views = EXCLUDED.channnel_views, total_videos = EXCLUDED.total_videos, 
+                    channel_views = EXCLUDED.channel_views, total_videos = EXCLUDED.total_videos, 
                     harvested_time = EXCLUDED.harvested_time""", (ch_basic.get("channel_id"), ch_basic.get("Channel_name"),
                     ch_basic.get("Subscribers"), ch_basic.get("Views"), ch_basic.get("Total_videos"), datetime.now()))
             conn.commit()
+            st.success("✅ Basic Channel Data stored in PostgreSQL")
         except Exception as e:
             conn.rollback()
             st.error(f"❌ Table creation failed: {e}")
@@ -346,10 +355,10 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
 
 # ------------------- Function to get Channel Stats ------------------- #
 @st.cache_data
-def get_channel_stats(channel_id):
+def get_channel_stats(_channel_id):
     # request = _youtube_api.channels().list(part='snippet,contentDetails,statistics', id=channel_id)
     response = safe_api_call(lambda yt: yt.channels().list(part='snippet,contentDetails,statistics', id=channel_id).execute(),
-                             cost_key="channels().list")
+                             cost_key="channels.list")
     # response = request.execute()
     try:
         data = dict(Channel_Id=channel_id, Channel_name=response['items'][0]['snippet']['title'],
@@ -383,7 +392,7 @@ def get_channel_stats(channel_id):
 #     except Exception as e:
 #         st.error(f"❌ Playlist fetching failed: {e}")
 #         return None
-def get_playlist_info(playlist_id, channel_name, channel_id):
+def get_playlist_info(_channel_id, channel_name, playlist_id):
     try:
         response = safe_api_call(lambda yt: yt.playlists().list(part='snippet,contentDetails,status',
                 id=playlist_id).execute(), cost_key="playlists().list")
@@ -410,7 +419,7 @@ def get_playlist_info(playlist_id, channel_name, channel_id):
         return None
 
 @st.cache_data
-def get_all_playlists_for_channel(channel_name, channel_id):
+def get_all_playlists_for_channel(_channel_id, channel_name):
     playlists = []
     next_page_token = None
     while True:
@@ -441,18 +450,22 @@ def get_all_playlists_for_channel(channel_name, channel_id):
 
 # --------------------- Function to get Video Stats -------------------------- #
 @st.cache_data
-def get_video_stats(playlist_id, max_results=50):
+def get_video_stats(_playlist_id, max_results=50):
+
     videos = []
     next_page_token = None
     count = 0
 
     while True:
         # PlaylistItems List
-        def playlist_items_call(yt):
-            return yt.playlistItems().list(part="contentDetails",playlistId=playlist_id,
-                maxResults=min(max_results - count, 50),pageToken=next_page_token).execute()
+        # def playlist_items_call(yt):
+        #     return lambda yt: yt.playlistItems().list(part="contentDetails",playlistId=playlist_id,
+        #         maxResults=min(max_results - count, 50),pageToken=next_page_token).execute()
 
-        playlist_response = safe_api_call(playlist_items_call, cost_key="playlistItems.list")
+        # playlist_response = safe_api_call(playlist_items_call, cost_key="playlistItems.list")
+        playlist_response = safe_api_call(lambda yt: yt.playlistItems().list(
+                            part="snippet,contentDetails", playlistId=_playlist_id, maxResults=min(max_results - count, 50),
+                            pageToken=next_page_token).execute(), cost_key="playlistItems.list")
 
         video_ids = [item['contentDetails']['videoId'] for item in playlist_response['items']]
         count += len(video_ids)
@@ -461,12 +474,13 @@ def get_video_stats(playlist_id, max_results=50):
             break
 
         # Video List
-        def videos_call(yt):
-            return yt.videos().list(part="snippet,contentDetails,statistics", id=",".join(video_ids)).execute()
+        # def videos_call(yt):
+        #     return lambda yt: yt.videos().list(part="snippet,contentDetails,statistics", id=",".join(video_ids)).execute()
 
-        video_response = safe_api_call(videos_call, cost_key="videos.list")
+        video_response = safe_api_call(lambda yt: yt.videos().list(part="snippet,contentDetails,statistics",
+                                        id=",".join(video_ids)).execute(), cost_key="videos.list")
 
-        for item in video_response['items']:
+        for item in video_response.get('items', []):
             video_data = {
                 "video_id": item['id'], "video_title": item['snippet']['title'],
                 "published_at": item['snippet']['publishedAt'], "view_count": item['statistics'].get('viewCount', 0),
@@ -484,10 +498,10 @@ def get_video_stats(playlist_id, max_results=50):
 
 # --- Fetch all playlists from channel ---
 @st.cache_data
-def get_all_playlists(channel_id):
+def get_all_playlists(_channel_id):
     playlists = []
     def initial_request():
-        return yt.playlists().list(part="snippet,contentDetails", channelId=channel_id, maxResults=50).execute()
+        return lambda yt: yt.playlists().list(part="snippet,contentDetails", channelId=_channel_id, maxResults=50).execute()
     request = initial_request()
 
     while request:
@@ -502,14 +516,14 @@ def get_all_playlists(channel_id):
                               "privacy_status": item.get("status", {}).get("privacyStatus", "public"),
                               "published_at": item["snippet"]["publishedAt"]})
 
-        request = yt.playlists().list_next(request, response)
+        # request = lambda yt: yt.playlists().list_next(request, response)
     return playlists
 
 # --- Fetch all videos from all playlists ---
 @st.cache_data
-def get_all_playlist_videos(channel_id):
+def get_all_playlist_videos(_channel_id):
     all_videos = []
-    all_playlists = get_all_playlists(channel_id)
+    all_playlists = get_all_playlists(_channel_id)
     for pl in all_playlists:
         pl_id = pl["playlist_id"]
         videos = get_video_stats(pl_id)
@@ -520,7 +534,7 @@ def get_all_playlist_videos(channel_id):
 
 # --------------------- Function to get Comments Stats --------------------- #
 @st.cache_data
-def update_comment_stats(video_ids, channel_name, max_comments_per_video=50):
+def update_comment_stats(_channel_name, video_ids, max_comments_per_video=50):
     all_comments = []
 
     for video_id in video_ids:
@@ -530,7 +544,7 @@ def update_comment_stats(video_ids, channel_name, max_comments_per_video=50):
 
             while True:
                 def fetch_comments(yt):
-                    return yt.commentThreads().list(part="snippet", videoId=video_id,
+                    return lambda yt: yt.commentThreads().list(part="snippet", videoId=video_id,
                         maxResults=min(max_comments_per_video - count, 50), pageToken=next_page_token,
                         textFormat="plainText").execute()
                 comment_response = safe_api_call(fetch_comments, cost_key="commentThreads.list")
@@ -558,11 +572,12 @@ def update_comment_stats(video_ids, channel_name, max_comments_per_video=50):
 
 # ----------- Function to get all the channel video details -------------- #
 @st.cache_data(ttl=3600, show_spinner=False)
-def extract_channel_all_details(channel_id, use_uploaded_playlist_only=True):
+def extract_channel_all_details(_channel_id, use_uploaded_playlist_only=True):
     # ---- 1. Getting Channel Statistics ---- #
     progress_bar_extract = st.progress(0.0, text="📤 Starting Youtube channel Harvesting...")
     with st.spinner('Fetching channel statistics...'):
-        channel_statistics = safe_api_call(lambda: get_channel_stats(channel_id), "channels().list")
+        # channel_statistics = safe_api_call(lambda yt: get_channel_stats(yt, channel_id), "channels().list")
+        channel_statistics = get_channel_stats(channel_id)
         if not channel_statistics:
             st.warning("⚠️ Channel statistics not available.")
             return None
@@ -585,7 +600,8 @@ def extract_channel_all_details(channel_id, use_uploaded_playlist_only=True):
                               "description": "Default upload playlist", "item_count": channel_statistics.get("Total_videos", 0),
                               "privacy_status": "public", "published_at": channel_statistics.get("published_at", "")}]
 
-            videos = safe_api_call(lambda: get_video_stats(uploads_playlist_id), "playlistItems.list")
+            # videos = safe_api_call(lambda yt: get_video_stats(yt, uploads_playlist_id), "playlistItems.list")
+            videos = get_video_stats(uploads_playlist_id)
             if videos:
                 all_videos.extend(videos)
         progress_bar_extract.progress(0.40, "✅ All Uploaded videos fetched.")
@@ -593,7 +609,8 @@ def extract_channel_all_details(channel_id, use_uploaded_playlist_only=True):
     else:
         with st.spinner("📂 Fetching all playlists and their videos..."):
             progress_bar_extract.progress(0.10, "Fetching all playlists and their videos...")
-            playlists = safe_api_call(lambda: get_all_playlists_for_channel(channel_name, channel_id), "playlists.list")
+            # playlists = safe_api_call(lambda yt: get_all_playlists_for_channel(yt, channel_name, channel_id), "playlists.list")
+            playlists = get_all_playlists_for_channel(channel_id, channel_name)
             if not playlists:
                 st.warning("⚠️ No playlists found.")
                 return None
@@ -604,7 +621,8 @@ def extract_channel_all_details(channel_id, use_uploaded_playlist_only=True):
             for idx, playlist in enumerate(playlists):
                 pid = playlist.get("playlist_id")
 
-                videos = safe_api_call(lambda: get_video_stats(pid), "playlistItems.list")
+                # videos = safe_api_call(lambda yt: get_video_stats(yt, pid), "playlistItems.list")
+                videos = get_video_stats(pid)
                 if videos:
                     all_videos.extend(videos)
                 pct = 0.11 + (0.20 * ((idx + 1) / total_playlists))
@@ -612,13 +630,32 @@ def extract_channel_all_details(channel_id, use_uploaded_playlist_only=True):
         progress_bar_extract.progress(0.40, "✅ All playlists and their videos fetched.")
 
     # ----3. Fetch comments for each Video ------ #
-    video_ids = [v.get("video_id") for v in all_videos if v.get("video_id")]
+    # video_ids = [v.get("video_id") for v in all_videos if v.get("video_id") and v.get("video_id") != "-" and v.get("video_id") != "_"]
+    video_ids = []
+    invalid_video_ids = []
+
+    for v in all_videos:
+        vid = v.get("video_id", "")
+        if is_valid_video_id(vid):
+            video_ids.append(vid)
+        else:
+            invalid_video_ids.append(vid)
+
+    if invalid_video_ids:
+        st.warning(f"⚠️ {len(invalid_video_ids)} invalid video IDs were skipped.")
+        mg_yth_db["invalid_video_ids"].insert_one({
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "invalid_ids": invalid_video_ids,
+            "timestamp": datetime.now().isoformat()
+        })
     comment_statistics = []
 
     if video_ids:
         with st.spinner("💬 Fetching comments for each video..."):
             for i, vid in enumerate(video_ids):
-                comments = safe_api_call(lambda: update_comment_stats(vid, channel_name, max_comments_per_video=50), "commentThreads.list")
+                # comments = safe_api_call(lambda yt: update_comment_stats(yt, vid, channel_name, max_comments_per_video=50), "commentThreads.list")
+                comments = update_comment_stats(channel_name, vid, max_comments_per_video=50)
                 if comments:
                     comment_statistics.extend(comments)
                 progress = 0.40 + (0.30 * ((i + 1) / len(video_ids)))
@@ -662,7 +699,6 @@ def extract_channel_all_details(channel_id, use_uploaded_playlist_only=True):
     #                         harvested_time = EXCLUDED.harvested_time;""", meta_rows[0])
     #         conn.commit()
 
-    st.success("✅ Harvest complete and stored successfully.")
     progress_bar_extract.progress(1.00, "✅ Harvest complete and stored successfully.")
     return channel_data
 
@@ -789,7 +825,6 @@ if selected == "YDH_DB":
 
         if Extract and channel_id:
             # extracted_data = safe_api_call(extract_channel_all_details,youtube_api, channel_id)
-            # st.markdown(api_status)
             # extracted_data = extract_channel_all_details(youtube_api, channel_id)
             extracted_data = extract_channel_all_details(channel_id)
 
@@ -859,16 +894,18 @@ if selected == "YDH_DB":
                 # ---- Summary ---- #
                 st.write(f"📺 Channel: {channel_name}")
                 # st.info(f"📊 Total API Calls Used: {api_counter['calls']}")
-                st.write(f"🎞️ Videos: {len(videos.get('Video_info', []))}")
-                st.write(f"💬 Comments: {len(comments.get('Comment_info', []))}")
-                st.write(f"🎞️ Videos: {len(videos)}")
+                st.write(f"🎞️ Videos: {len(extracted_data.get('Video_info', []))}")
+                st.write(f"💬 Comments: {len(extracted_data.get('Comment_info', []))}")
+                # st.write(f"🎞️ Videos: {len(videos)}")
                 st.write(f"💬 Comments: {len(comments)}")
 
                 # --- Direct PostgreSQL storage - Basic Channel Info Option ---- #
                 if store_pgsql:
                     try:
-                        store_postgresql_direct(extracted_data)
-                        st.success("✅ Basic Channel Data stored in PostgreSQL")
+                        with init_connection() as conn:
+                            store_postgresql_direct(conn, extracted_data)
+
+                        # st.success("✅ Basic Channel Data stored in PostgreSQL")
                     except Exception as e:
                         st.error(f"❌ PostgreSQL storage failed: {e}")
 
@@ -888,7 +925,7 @@ if selected == "YDH_DB":
 
                 # ---- Channel Preview Option - Json and Dataframe ---- #
                 st.markdown("📋 Channel Info")
-                col1, col2, col3 = st.columns([1, 1, 3])
+                col1, col2, col3 = st.columns([1, 1, 2])
                 with col1:
                     display_json = st.button("Display Extracted Json Channel Info for Reference")
                 with col3:
