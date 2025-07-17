@@ -185,18 +185,22 @@ def store_postgresql_direct(conn, data):
             with conn.cursor() as cur:
                 # Insert into channel table
                 ch_basic = data.get('Channel_info', {})
+                # Debug: log the channel info before insert
+                st.write("🛠️ Debug - Channel Info:", ch_basic)
                 channel_id = ch_basic.get("Channel_Id")
+                st.write("🛠️ Debug - Channel Info:", channel_id)
                 if not channel_id:
                     st.error("❌ Channel_Id is missing. Skipping database insert.")
                     return
                 cur.execute("""CREATE TABLE IF NOT EXISTS channel_table_direct (channel_id VARCHAR(50) PRIMARY KEY, 
                     channel_name VARCHAR(50), subscribers INT, channel_views INT, total_videos INT,
                     harvested_time TIMESTAMP);""")
+                # Insert record
                 cur.execute("""INSERT INTO channel_table_direct (channel_id, channel_name, subscribers, channel_views, 
                     total_videos, harvested_time) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO UPDATE SET 
                     channel_name = EXCLUDED.channel_name, subscribers = EXCLUDED.subscribers, 
                     channel_views = EXCLUDED.channel_views, total_videos = EXCLUDED.total_videos, 
-                    harvested_time = EXCLUDED.harvested_time""", (ch_basic.get("channel_id"), ch_basic.get("Channel_name"),
+                    harvested_time = EXCLUDED.harvested_time""", (channel_id, ch_basic.get("Channel_name"),
                     ch_basic.get("Subscribers"), ch_basic.get("Views"), ch_basic.get("Total_videos"), datetime.now()))
             conn.commit()
             st.success("✅ Basic Channel Data stored in PostgreSQL")
@@ -699,7 +703,7 @@ def extract_channel_all_details(_channel_id, use_uploaded_playlist_only=True):
     #                         harvested_time = EXCLUDED.harvested_time;""", meta_rows[0])
     #         conn.commit()
 
-    progress_bar_extract.progress(1.00, "✅ Harvest complete and stored successfully.")
+    progress_bar_extract.progress(1.00, "✅ Channel Data created and log stored successfully in MonngoDB.")
     return channel_data
 
 # ---------------------------------- Streamlit UI -------------------------------------- #
@@ -783,17 +787,6 @@ if selected == "YDH_DB":
 
         # ---- API Quota Usage ---- #
         show_quota_usage()
-        # total_quota = 10000
-        # used = st.session_state.quota_used
-        # remaining = total_quota - used
-        #
-        # st.markdown(f"### 📊 API Quota Usage")
-        # st.progress(min(used / total_quota, 1.0))
-        # st.markdown(f"""**Used:** `{used} units`
-        # **Remaining:** `{remaining} units`
-        # **Limit:** `{total_quota} units/day`""")
-        # if st.button("Reset Quota Counter"):
-        #     st.session_state.quota_used = 0
 
         col1, col2, col3 = st.columns([4, 1, 2])
         with col1:
@@ -810,7 +803,6 @@ if selected == "YDH_DB":
             export_json = st.checkbox("🗃️ Export data as JSON")
 
         if Search and channel_id:
-
             # view_data = safe_api_call(get_channel_stats,youtube_api, channel_id)
             view_data = get_channel_stats(channel_id)
             if view_data:
@@ -897,7 +889,7 @@ if selected == "YDH_DB":
                 st.write(f"🎞️ Videos: {len(extracted_data.get('Video_info', []))}")
                 st.write(f"💬 Comments: {len(extracted_data.get('Comment_info', []))}")
                 # st.write(f"🎞️ Videos: {len(videos)}")
-                st.write(f"💬 Comments: {len(comments)}")
+                # st.write(f"💬 Comments: {len(comments)}")
 
                 # --- Direct PostgreSQL storage - Basic Channel Info Option ---- #
                 if store_pgsql:
