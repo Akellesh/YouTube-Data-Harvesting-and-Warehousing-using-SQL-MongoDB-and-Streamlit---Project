@@ -10,7 +10,6 @@ import isodate
 from textblob import TextBlob
 from langdetect import detect
 import streamlit as st
-from streamlit.runtime.caching import save_media_data
 from streamlit_option_menu import option_menu
 import plotly.express as px
 import traceback
@@ -27,10 +26,14 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # ---------- YouTube API Management --------------- #
-# ---------- Safely Call Youtube API ------------- #
 # ---- API Keys ---- from .streamlit/secrets.toml #
-YOUTUBE_API_KEYS = st.secrets["youtube"]["api_keys"]
-api_key_index = 0
+YOUTUBE_API_KEYS_P1 = st.secrets["youtube1"]["api_keys"]  # Project 1 — 10,000 quota
+YOUTUBE_API_KEYS_P2 = st.secrets["youtube2"]["api_keys"]  # Project 2 — 10,000 quota
+YOUTUBE_API_KEYS = [
+    key for pair in zip(YOUTUBE_API_KEYS_P1, YOUTUBE_API_KEYS_P2)
+    for key in pair
+]
+# Cycle through the interleaved keys
 api_key_cycle = cycle(YOUTUBE_API_KEYS)
 
 # ---- Session-level API quota usage tracker ---- #
@@ -38,108 +41,144 @@ if "quota_used" not in st.session_state:
     st.session_state.quota_used = 0
 
 # ---- Quota per endpoint (approx. official) ---- #
-API_COST_MAP = {"channels().list": 1, "search().list": 100, "videos().list": 1,
-                "commentThreads().list": 1, "playlistItems().list": 1, "playlists().list": 1}
+API_COST_MAP = {
+    "channels().list": 1,
+    "search().list": 100,
+    "videos().list": 1,
+    "commentThreads().list": 1,
+    "playlistItems().list": 1,
+    "playlists().list": 1,
+}
 
-
-# ---- API Key Rotation ---- #
+# ---- Build API Key Service with Given Key ---- #
 @st.cache_resource
 def get_youtube_api(api_key):
-    # key = next(api_key_cycle)
     return build("youtube", "v3", developerKey=api_key)
+
+# ---- Get API Key and build service - Rotation Helper ---- #
+def get_next_youtube_service():
+    """Cycles through API keys and returns (key, service)."""
+    try:
+        api_key = next(api_key_cycle)
+        youtube_service = get_youtube_api(api_key)
+        return api_key, youtube_service
+    except Exception as e:
+        st.error(f"❌ Failed to create YouTube service: {e}")
+        return None, None
+
+# ---- Quota Increment Helper ---- #
+def increment_quota(cost_key):
+    cost = API_COST_MAP.get(cost_key, 1)
+    st.session_state.quota_used += cost
+
 
 # --------- Track API usage and display ---------- #
 def show_quota_usage():
-    total_quota = 10000
-    used = st.session_state.quota_used
+    total_quota = 20000
+    per_project = 10000
+    used = st.session_state.get("quota_used", 0)
     remaining = total_quota - used
+    # ── Metric cards ──
+    m1, m2, m3 = st.columns(3)
+    m1.metric("🔢 Total Quota", f"{total_quota:,} units")
+    m2.metric("✅ Total Used", f"{used:,} units")
+    m3.metric("🟢 Remaining", f"{remaining:,} units",
+              delta=f"-{used} used", delta_color="inverse")
+    n1, n2 = st.columns(2)
+    n1.metric("📁 Project 1 Est.", f"{min(used, per_project)} / {per_project}")
+    n2.metric("📁 Project 2 Est.", f"{max(0, used - per_project):,} / {per_project:,}")
 
-    st.markdown("### 📊 API Quota Usage")
-    st.progress(min(used / total_quota, 1.0))
-    st.markdown(f"""
-    - **Used:** `{used} units`  
-    - **Remaining:** `{remaining} units`  
-    - **Limit:** `{total_quota} units/day`  
-    """)
-    if st.button("🔄 Reset Quota Counter"):
+    # ── Progress bar with colour warning ──
+    pct = min(used / total_quota, 1.0)
+    st.progress(pct)
+    if used >= 10000:
+        st.warning("⚠️ Project 1 quota likely exhausted. Running on Project 2 keys.")
+    elif used >= 20000:
+        st.error("🚫 All quota exhausted for today. Resets at midnight Pacific Time.")
+    elif pct >= 0.9:
+        st.error("🚫 Over 90% quota used. Resets at midnight Pacific Time.")
+    elif pct >= 0.7:
+        st.warning("⚠️ Over 70% quota used. Only few extraction possible, Consider pausing extraction for today.")
+    elif used > 0:
+        st.success("✅ Quota healthy.")
+    else:
+        st.info("🕒 No quota used yet today.")
+
+    # ── Action button - Reset ── #
+    if st.button("🔄 Reset Quota Counter", use_container_width=True):
         st.session_state.quota_used = 0
+        st.rerun()
 
-
-# --- Pre-Wrapped Helper : Quota Tracking and Error Handling ---- #
+# ---- Pre-Wrapped Helper: Quota Tracking and Error Handling ---- #
 def safe_api_call(service_function, cost_key=None):
-    """Wrap a YouTube API call with key rotation, quota tracking, and error handling."""
-    global api_key_cycle
-
+    """Wrap a YouTube API call with key rotation, quota tracking, and error handling.
+    service_function must accept a youtube service object and return the response:
+        lambda yt: yt.channels().list(...).execute()
+    """
     for _ in range(len(YOUTUBE_API_KEYS)):
+        api_key, youtube_api = get_next_youtube_service()
+        if not youtube_api:
+            continue
         try:
-            # Get current API key and build service
-            api_key = next(api_key_cycle)
-            youtube_api = get_youtube_api(api_key)
-
-            # Execute the provided service function (already created with `.list(...).execute`)
             response = service_function(youtube_api)
-
-            # Update quota
-            cost = API_COST_MAP.get(cost_key, 1)
-            st.session_state.quota_used += cost
-
+            increment_quota(cost_key)
             return response
-
         except HttpError as e:
-            error_reason = ''
+            error_reason = ""
             try:
-                error_reason = e.error_details[0]['reason']
-            except:
+                error_reason = e.error_details[0]["reason"]
+            except Exception:
                 pass
 
-            if 'quotaExceeded' in str(e) or error_reason == 'quotaExceeded':
-                st.warning(f"🔁 Quota exceeded for current key `{api_key}`. Trying next key...")
-                continue  # Try next key
+            if "quotaExceeded" in str(e) or error_reason == "quotaExceeded":
+                st.warning(f"🔁 Quota exceeded for key `{api_key}`. Trying next key...")
+                continue
             else:
-                st.error(f"❌ API Error: {e}")
+                # 403 on commentThreads is expected — don't alarm the user
+                if e.resp.status != 403:
+                    st.error(f"❌ API Error: {e}")
                 return None
 
     st.error("🚫 All API keys exhausted or failed.")
     return None
 
+
 # ----------- MongoDB Setup -------------- #
-# ---- Refers Connection with MongoDB ---- #
 @st.cache_resource
 def get_mongo_client():
     mongo_url = st.secrets["mongodb"]["connection_url"]
-    # Creating Client Object for connection based on pymongo and refers connection link
     try:
         client = MongoClient(mongo_url, serverSelectionTimeoutMS=3000)
-        client.admin.command('ping')  # test Connection
+        client.admin.command("ping")
         return client
     except errors.ServerSelectionTimeoutError as e:
-        st.error(f"❌ Failed to connect to MongoDB. Check URI or server. {e}")
+        st.error(f"❌ Failed to connect to MongoDB: {e}")
         st.stop()
 
-# Cached MongoDB client with Auto-Connect
+
 client = get_mongo_client()
-# Creating mg_yth_db object for DataBase based on client and refers YouTubeHarvest
-mg_yth_db = client['YouTubeHarvest']
-# Creating collection_list for Collection based on mg_yth_db
-# Optionally get collection list once
+mg_yth_db = client["YouTubeHarvest"]
 collection_list = mg_yth_db.list_collection_names()
 
-# ---- Helper Functions ---- #
-def sanitize(name):
-    return re.sub(r'[.$]', '_', name)
 
-# -------- Initialize Postgres DataBase connection. ----------- #
-# -- Uses st.cache_resource to only run once, for models, connection, tools. -- #
+# ---- Helper: sanitize collection names ---- #
+def sanitize(name):
+    return re.sub(r"[.$]", "_", name)
+
+
+# -------- Initialize Postgres connection --------- #
 @st.cache_resource
 def init_connection():
     return psycopg2.connect(**st.secrets["postgres"])
 
-# conn = init_connection()
 
+# ---- Video ID validator ---- #
 def is_valid_video_id(video_id):
     """Validate YouTube video ID: exactly 11 characters (letters, digits, - or _)."""
     return bool(re.fullmatch(r"[a-zA-Z0-9_-]{11}", video_id))
 
+
+# ---- ISO 8601 duration → HH:MM:SS ---- #
 def parse_duration_to_hms(duration_str):
     try:
         duration = isodate.parse_duration(duration_str)
@@ -151,980 +190,1495 @@ def parse_duration_to_hms(duration_str):
     except Exception:
         return None
 
-# ---------------- PostgreSQL - DB Operations ---------------- #
-# ---- Direct Postgresql Table during Harvest ---- #
+
+# ============================================================
+# PostgreSQL - DB Operations
+# ============================================================
+
 def store_postgresql_direct(conn, data):
-    with st.spinner("🔧 Creating PostgreSQL Channel Info Basic table for direct Information Storing..."):
+    """Store basic channel info directly to PostgreSQL right after harvest."""
+    with st.spinner("🔧 Storing basic channel info in PostgreSQL..."):
         try:
+            ch_basic = data.get("Channel_info", {})
+            channel_id = ch_basic.get("Channel_Id")
+            if not channel_id:
+                st.error("❌ Channel_Id is missing. Skipping database insert.")
+                return
             with conn.cursor() as cur:
-                # Insert into channel table
-                ch_basic = data.get('Channel_info', {})
-                # Debug: log the channel info before insert
-                st.write("🛠️ Debug - Channel Info:", ch_basic)
-                channel_id = ch_basic.get("Channel_Id")
-                st.write("🛠️ Debug - Channel Info:", channel_id)
-                if not channel_id:
-                    st.error("❌ Channel_Id is missing. Skipping database insert.")
-                    return
-                cur.execute("""CREATE TABLE IF NOT EXISTS channel_table_direct (channel_id VARCHAR(50) PRIMARY KEY, 
-                    channel_name VARCHAR(50), subscribers INT, channel_views INT, total_videos INT,
-                    harvested_time TIMESTAMP);""")
-                # Insert record
-                cur.execute("""INSERT INTO channel_table_direct (channel_id, channel_name, subscribers, channel_views, 
-                    total_videos, harvested_time) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO UPDATE SET 
-                    channel_name = EXCLUDED.channel_name, subscribers = EXCLUDED.subscribers, 
-                    channel_views = EXCLUDED.channel_views, total_videos = EXCLUDED.total_videos, 
-                    harvested_time = EXCLUDED.harvested_time""", (channel_id, ch_basic.get("Channel_name"),
-                    ch_basic.get("Subscribers"), ch_basic.get("Views"), ch_basic.get("Total_videos"), datetime.now()))
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS channel_table_direct (
+                        channel_id    VARCHAR(50) PRIMARY KEY,
+                        channel_name  VARCHAR(255),
+                        subscribers   INT,
+                        channel_views INT,
+                        total_videos  INT,
+                        harvested_time TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    INSERT INTO channel_table_direct
+                        (channel_id, channel_name, subscribers, channel_views, total_videos, harvested_time)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        channel_name   = EXCLUDED.channel_name,
+                        subscribers    = EXCLUDED.subscribers,
+                        channel_views  = EXCLUDED.channel_views,
+                        total_videos   = EXCLUDED.total_videos,
+                        harvested_time = EXCLUDED.harvested_time;
+                """, (
+                    channel_id,
+                    ch_basic.get("Channel_name"),
+                    int(ch_basic.get("Subscribers", 0)),
+                    int(ch_basic.get("Views", 0)),
+                    int(ch_basic.get("Total_videos", 0)),
+                    datetime.now(),
+                ))
             conn.commit()
             st.success("✅ Basic Channel Data stored in PostgreSQL")
         except Exception as e:
             conn.rollback()
-            st.error(f"❌ Table creation failed: {e}")
-# ---- Create PostgreSQL Tables for Data Migration ---- #
-def create_postgrsql_tables(conn):
+            st.error(f"❌ Direct PostgreSQL store failed: {e}")
+
+
+def create_postgresql_tables(conn):
+    """Create all four normalised tables if they do not already exist."""
     with st.spinner("🔧 Creating PostgreSQL tables..."):
         try:
             with conn.cursor() as cur:
-                cur.execute("""CREATE TABLE IF NOT EXISTS channel_table (channel_id VARCHAR(50) PRIMARY KEY, 
-                    channel_name VARCHAR(50), subscribers INT, channel_views INT, total_videos INT, 
-                    harvested_time TIMESTAMP);""")
-
-                cur.execute("""CREATE TABLE IF NOT EXISTS channel_playlist (playlist_id VARCHAR(255) PRIMARY KEY, 
-                    playlist_name VARCHAR(100), channel_name VARCHAR(255), channel_id VARCHAR(255), description TEXT,
-                    item_count INT, privacy_status VARCHAR(50), published_at TIMESTAMP, 
-                    harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
-
-                cur.execute("""CREATE TABLE IF NOT EXISTS channel_videos (video_id VARCHAR(50) PRIMARY KEY, 
-                    playlist_id VARCHAR(50), video_name VARCHAR(120), video_description TEXT, published_date TIMESTAMP,
-                    category_id INT, duration TIME, video_quality VARCHAR(20), licensed VARCHAR(10), 
-                    view_count INT, like_count INT, dislike_count INT, favorite_count INT, comments_count INT,  
-                    thumbnail VARCHAR(120), caption_status VARCHAR(150));""")
-
-                cur.execute("""CREATE TABLE IF NOT EXISTS channel_comments (comment_id VARCHAR(50) PRIMARY KEY, video_id VARCHAR(50), 
-                    channel_name VARCHAR(50), comment_text TEXT, comment_date TIMESTAMP, comment_author VARCHAR(255), 
-                    comment_like INT DEFAULT 0, reply_count INT DEFAULT 0, is_pinned BOOLEAN DEFAULT FALSE, 
-                    is_hearted BOOLEAN DEFAULT FALSE, language VARCHAR(10), sentiment_score FLOAT, 
-                    harvested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);""")
-
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS channel_table (
+                        channel_id    VARCHAR(50) PRIMARY KEY,
+                        channel_name  VARCHAR(255),
+                        subscribers   INT,
+                        channel_views INT,
+                        total_videos  INT,
+                        harvested_time TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS channel_playlist (
+                        playlist_id    VARCHAR(255) PRIMARY KEY,
+                        playlist_name  VARCHAR(255),
+                        channel_name   VARCHAR(255),
+                        channel_id     VARCHAR(255),
+                        description    TEXT,
+                        item_count     INT,
+                        privacy_status VARCHAR(50),
+                        published_at   TIMESTAMP,
+                        harvested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS channel_videos (
+                        video_id          VARCHAR(50) PRIMARY KEY,
+                        playlist_id       VARCHAR(50),
+                        video_name        VARCHAR(500),
+                        video_description TEXT,
+                        published_date    TIMESTAMP,
+                        category_id       INT,
+                        duration          TIME,
+                        video_quality     VARCHAR(20),
+                        licensed          VARCHAR(10),
+                        view_count        INT,
+                        like_count        INT,
+                        dislike_count     INT,
+                        favorite_count    INT,
+                        comments_count    INT,
+                        thumbnail         VARCHAR(500),
+                        caption_status    VARCHAR(150)
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS channel_comments (
+                        comment_id      VARCHAR(50) PRIMARY KEY,
+                        video_id        VARCHAR(50),
+                        channel_name    VARCHAR(255),
+                        comment_text    TEXT,
+                        comment_date    TIMESTAMP,
+                        comment_author  VARCHAR(255),
+                        comment_like    INT     DEFAULT 0,
+                        reply_count     INT     DEFAULT 0,
+                        is_pinned       BOOLEAN DEFAULT FALSE,
+                        is_hearted      BOOLEAN DEFAULT FALSE,
+                        language        VARCHAR(10),
+                        sentiment_score FLOAT,
+                        harvested_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
             conn.commit()
         except Exception as e:
             conn.rollback()
             st.error(f"❌ Table creation failed: {e}")
 
-# ---------- Insert Channel meta - PostgreSQL------------- #
+
 def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
+    """Migrate a harvested channel from MongoDB to PostgreSQL."""
     try:
         progress_bar = st.progress(0, text="📤 Starting migration...")
-        create_postgrsql_tables(conn)
+        create_postgresql_tables(conn)
 
-        # ------ Get MonngoDB Data ------ #
+        # ------ Fetch from MongoDB ------ #
         meta = mg_yth_db[f"{selected_channel}_meta"].find_one()
-        # st.dataframe(meta)
         if not meta:
-            st.error(f"⚠️ No meta data found for the channel: {selected_channel}, Check the ID and try again.")
+            st.error(f"⚠️ No meta data found for: {selected_channel}")
             return
-        # playlists = list(mg_yth_db[f"{selected_channel}_playlists"].find()) if (f"{selected_channel}_playlists" in
-        #                             mg_yth_db.list_collection_names()) else []
+
         playlists = list(mg_yth_db[f"{selected_channel}_playlist"].find())
-        st.dataframe(playlists)
-        for p in playlists:
-            p.pop("_id", None)
-        videos = list(mg_yth_db[f"{selected_channel}_videos"].find())
+        videos    = list(mg_yth_db[f"{selected_channel}_videos"].find())
+        comments  = list(mg_yth_db[f"{selected_channel}_comments"].find())
 
-        comments = list(mg_yth_db[f"{selected_channel}_comments"].find())
-
-        # Remove ObjectId (_id) fields
-        # for item in [meta] + videos + comments:
-        #     if isinstance(item, dict):
-        #         item.pop('_id', None)
-
-        def remove_mongo_ids(docs):
+        # Remove MongoDB ObjectIds
+        def strip_ids(docs):
             for d in docs:
                 if isinstance(d, dict):
-                    d.pop('_id', None)
+                    d.pop("_id", None)
             return docs
 
-        meta = remove_mongo_ids([meta])[0]  # single dict
-        playlists = remove_mongo_ids(playlists)
-        videos = remove_mongo_ids(videos)
-        comments = remove_mongo_ids(comments)
+        meta      = strip_ids([meta])[0]
+        playlists = strip_ids(playlists)
+        videos    = strip_ids(videos)
+        comments  = strip_ids(comments)
 
-        # ------------ Insert Channel meta - PostgreSQL ---------------- #
-        progress_bar.progress(0.2, "📦 Preparing metadata for insert...")
-        # meta_rows = [(selected_channel, meta.get('Channel_id'), meta.get('Subscribers', 0), meta.get('Views', 0),
-        #               meta.get('Total_videos', 0), meta.get('Harvested_at', datetime.now()))]
-        # assert all([meta.get("Channel_Id"), meta.get("Channel_name"),
-        #             meta.get("Subscribers") is not None]), "Missing essential metadata fields"
+        # ---- Validate required fields before any DB write ---- #
+        channel_id_val   = meta.get("Channel_Id")
+        channel_name_val = meta.get("Channel_name")
+        subscribers_val  = meta.get("Subscribers")
+        if not all([channel_id_val, channel_name_val, subscribers_val is not None]):
+            st.error("❌ Missing essential metadata fields (Channel_Id / Channel_name / Subscribers). Aborting.")
+            return
+
+        # ---- Insert channel row ---- #
+        progress_bar.progress(0.2, "📦 Inserting channel metadata...")
         with conn.cursor() as cur:
-            cur.execute("""INSERT INTO channel_table (channel_id, channel_name, subscribers, channel_views, 
-                                                      total_videos, harvested_time)
-                       VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (channel_id) DO UPDATE SET 
-                                channel_name = EXCLUDED.channel_name, 
-                               subscribers = EXCLUDED.subscribers, channel_views = EXCLUDED.channel_views, 
-                               total_videos = EXCLUDED.total_videos, harvested_time = EXCLUDED.harvested_time;""",
-                        (meta.get("Channel_Id"), meta.get("Channel_name"),meta.get("Subscribers"), meta.get("channel_views"),
-                         meta.get("total_videos"), meta.get("harvested_time"), datetime.now()))
-            assert all([meta.get("Channel_Id"), meta.get("Channel_name"),
-                        meta.get("Subscribers") is not None]), "Missing essential metadata fields"
+            cur.execute("""
+                INSERT INTO channel_table
+                    (channel_id, channel_name, subscribers, channel_views, total_videos, harvested_time)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (channel_id) DO UPDATE SET
+                    channel_name   = EXCLUDED.channel_name,
+                    subscribers    = EXCLUDED.subscribers,
+                    channel_views  = EXCLUDED.channel_views,
+                    total_videos   = EXCLUDED.total_videos,
+                    harvested_time = EXCLUDED.harvested_time;
+            """, (
+                channel_id_val,
+                channel_name_val,
+                int(subscribers_val),
+                int(meta.get("Views", 0)),
+                int(meta.get("Total_videos", 0)),
+                datetime.now(),
+            ))
 
-
-        # --------------- Insert into channel_playlist ---------------- #
-        progress_bar.progress(0.3, "🎞 Inserting video records...")
+        # ---- Insert playlists ---- #
+        progress_bar.progress(0.3, "🎞 Inserting playlist records...")
         if playlists:
-            playlist_rows = [(p.get("playlist_id"), p.get("playlist_title"), selected_channel, p.get("Channel_id"),
-                    p.get("description", ""), int(p.get("item_count", 0)), p.get("privacy_status", ""),
-                    p.get("published_at"), datetime.now()) for p in playlists]
+            playlist_rows = [
+                (
+                    p.get("playlist_id"),
+                    p.get("playlist_name") or p.get("playlist_title"),
+                    selected_channel,
+                    p.get("channel_id") or channel_id_val,
+                    p.get("description", ""),
+                    int(p.get("item_count", 0)),
+                    p.get("privacy_status", ""),
+                    p.get("published_at"),
+                    datetime.now(),
+                )
+                for p in playlists
+            ]
             with conn.cursor() as cur:
-                execute_values(cur, """INSERT INTO channel_playlist (playlist_id, playlist_Name, channel_name,
-                                channel_id, description, item_count, privacy_status, published_at, harvested_at)
-                                    VALUES %s ON CONFLICT (playlist_id) DO NOTHING;""", playlist_rows)
+                execute_values(cur, """
+                    INSERT INTO channel_playlist
+                        (playlist_id, playlist_name, channel_name, channel_id, description,
+                         item_count, privacy_status, published_at, harvested_at)
+                    VALUES %s ON CONFLICT (playlist_id) DO NOTHING;
+                """, playlist_rows)
 
-        # ---------- Insert Channel Videos - PostgreSQL------------- #
+        # ---- Insert videos ---- #
         progress_bar.progress(0.45, "🎞 Inserting video records...")
         if videos:
-            video_rows = [(v.get("video_id"), v.get("playlist_id"), v.get("video_title"), v.get("description", ""),
-                    v.get("published_at"), int(v.get("category_id", 0)), parse_duration_to_hms(v.get("duration")),
-                    v.get("definition", "hd"), v.get("licensed_content", "No"), int(v.get("view_count", 0)),
-                    int(v.get("like_count", 0)), int(v.get("dislike_count", 0)), int(v.get("favorite_count", 0)),
-                    int(v.get("comment_count", 0)), v.get("thumbnail", ""), v.get("caption_status", "Unknown"))
-                           for v in videos]
+            video_rows = [
+                (
+                    v.get("video_id"),
+                    v.get("playlist_id"),
+                    v.get("video_title"),
+                    v.get("description", ""),
+                    v.get("published_at"),
+                    int(v.get("category_id", 0)),
+                    parse_duration_to_hms(v.get("duration")),
+                    v.get("definition", "hd"),
+                    v.get("licensed_content", "No"),
+                    int(v.get("view_count", 0)),
+                    int(v.get("like_count", 0)),
+                    int(v.get("dislike_count", 0)),
+                    int(v.get("favorite_count", 0)),
+                    int(v.get("comment_count", 0)),
+                    v.get("thumbnail", ""),
+                    v.get("caption_status", "Unknown"),
+                )
+                for v in videos
+            ]
             with conn.cursor() as cur:
-                execute_values(cur, """INSERT INTO channel_videos (video_id, playlist_id, video_name, 
-                        video_description, published_date, category_id, duration, video_quality, 
-                        licensed, view_count, like_count, dislike_count, favorite_count, comments_count,
-                        thumbnail, caption_status) VALUES %s ON CONFLICT (video_id) DO NOTHING;""", video_rows)
-
-        if not videos:
+                execute_values(cur, """
+                    INSERT INTO channel_videos
+                        (video_id, playlist_id, video_name, video_description, published_date,
+                         category_id, duration, video_quality, licensed, view_count, like_count,
+                         dislike_count, favorite_count, comments_count, thumbnail, caption_status)
+                    VALUES %s ON CONFLICT (video_id) DO NOTHING;
+                """, video_rows)
+        else:
             st.info("No videos to migrate.")
 
-        # ---------- Insert Channel comments - PostgreSQL------------- #
+        # ---- Insert comments ---- #
         progress_bar.progress(0.7, "💬 Inserting comment records...")
         if comments:
             comment_rows = []
             for c in comments:
-                text = c.get("comment_text", "")
+                text = c.get("comment_text", "") or ""
                 try:
                     sentiment = TextBlob(text).sentiment.polarity
-                    lang = detect(text)
-                except:
+                    lang = detect(text) if text.strip() else "en"
+                except Exception:
                     sentiment = None
                     lang = "en"
-                comment_rows.append((c.get("comment_id"), c.get("video_id"), selected_channel, c.get("comment_text"),
-                    c.get("comment_date"), c.get("author"), int(c.get("like_count", 0)), int(c.get("reply_count", 0)),
-                    c.get("is_pinned", False), c.get("is_hearted", False), lang, sentiment, datetime.now()))
+                comment_rows.append((
+                    c.get("comment_id"),
+                    c.get("video_id"),
+                    selected_channel,
+                    text,
+                    c.get("comment_date"),
+                    c.get("author"),
+                    int(c.get("like_count", 0)),
+                    int(c.get("reply_count", 0)),
+                    bool(c.get("is_pinned", False)),
+                    bool(c.get("is_hearted", False)),
+                    lang,
+                    sentiment,
+                    datetime.now(),
+                ))
             with conn.cursor() as cur:
-                execute_values(cur, """INSERT INTO channel_comments (comment_id, video_id, channel_name, comment_text, 
-                        comment_date, comment_author, comment_like, reply_count, is_pinned, is_hearted,
-                        language, sentiment_score, harvested_at) VALUES %s ON CONFLICT (comment_id) DO NOTHING;""", comment_rows)
-
-        if not comments:
+                execute_values(cur, """
+                    INSERT INTO channel_comments
+                        (comment_id, video_id, channel_name, comment_text, comment_date,
+                         comment_author, comment_like, reply_count, is_pinned, is_hearted,
+                         language, sentiment_score, harvested_at)
+                    VALUES %s ON CONFLICT (comment_id) DO NOTHING;
+                """, comment_rows)
+        else:
             st.info("No comments to migrate.")
 
         conn.commit()
-        # ----- Migration Completed ------ #
         progress_bar.progress(1.0, "✅ Migration complete!")
         st.success(f"✅ Channel '{selected_channel}' migrated to PostgreSQL")
-        st.write(f"📦 Migrated {len(videos)} videos and {len(comments)} comments for '{selected_channel}'")
+        st.write(f"📦 {len(videos)} videos · {len(comments)} comments migrated.")
 
     except Exception as e:
         conn.rollback()
         st.error(f"❌ Migration failed: {e}")
+        traceback.print_exc()
 
-# ------------------- Function to get Channel Stats ------------------- #
+
+# ============================================================
+# YouTube API Data Fetching Functions
+# All functions use the _param (underscore-prefix) convention
+# for @st.cache_data and pass it explicitly into every lambda
+# to avoid closure / global-variable bugs.
+# ============================================================
+
 @st.cache_data
 def get_channel_stats(_channel_id):
-    # request = _youtube_api.channels().list(part='snippet,contentDetails,statistics', id=channel_id)
-    response = safe_api_call(lambda yt: yt.channels().list(part='snippet,contentDetails,statistics', id=channel_id).execute(),
-                             cost_key="channels.list")
-    # response = request.execute()
-    try:
-        data = dict(Channel_Id=channel_id, Channel_name=response['items'][0]['snippet']['title'],
-          Subscribers=response['items'][0]['statistics']['subscriberCount'],
-          Views=response['items'][0]['statistics']['viewCount'], Total_videos=response['items'][0]['statistics']['videoCount'],
-          playlist_id=response['items'][0]['contentDetails']['relatedPlaylists']['uploads'])
-        return data
-    except KeyError:
-        return False
-
-# --------------------- Function to get Playlist Info ------------------------ #
-@st.cache_data
-# def get_playlist_info(_youtube_api, playlist_id, channel_name, channel_id):
-#     try:
-#         request = youtube_api.playlists().list(part='snippet,contentDetails,status', id=playlist_id)
-#         response = safe_api_call(request.execute)
-#
-#         if response['items']:
-#             item = response['items'][0]
-#             playlist = {"playlist_id": playlist_id, "playlist_name": item['snippet']['title'],
-#                 "channel_name": channel_name, "channel_id": channel_id,
-#                 "description": item['snippet'].get('description', ''),
-#                 "item_count": item['contentDetails'].get('itemCount', 0),
-#                 "privacy_status": item['status'].get('privacyStatus', 'public'),
-#                 "published_at": item['snippet'].get('publishedAt'),
-#                 "harvested_at": datetime.now().isoformat()
-#             }
-#             return playlist
-#         else:
-#             return None
-#     except Exception as e:
-#         st.error(f"❌ Playlist fetching failed: {e}")
-#         return None
-def get_playlist_info(_channel_id, channel_name, playlist_id):
-    try:
-        response = safe_api_call(lambda yt: yt.playlists().list(part='snippet,contentDetails,status',
-                id=playlist_id).execute(), cost_key="playlists().list")
-
-        if response and response.get('items'):
-            item = response['items'][0]
-            playlist = {"playlist_id": playlist_id, "playlist_name": item['snippet']['title'],
-                        "channel_name": channel_name, "channel_id": channel_id,
-                        "description": item['snippet'].get('description', ''),
-                        "item_count": item['contentDetails'].get('itemCount', 0),
-                        "privacy_status": item['status'].get('privacyStatus', 'public'),
-                        "published_at": item['snippet'].get('publishedAt'),
-                        "harvested_at": datetime.now().isoformat()}
-            return playlist
-        else:
-            return None
-
-    except Exception as e:
-        st.error(f"❌ Playlist fetching failed: {e}")
+    """Fetch top-level channel statistics and the uploads playlist ID."""
+    response = safe_api_call(
+        lambda yt: yt.channels().list(
+            part="snippet,contentDetails,statistics",
+            id=_channel_id,
+        ).execute(),
+        cost_key="channels().list",
+    )
+    if not response or not response.get("items"):
         return None
+    try:
+        item = response["items"][0]
+        return {
+            "Channel_Id":    _channel_id,
+            "Channel_name":  item["snippet"]["title"],
+            "Subscribers":   item["statistics"].get("subscriberCount", 0),
+            "Views":         item["statistics"].get("viewCount", 0),
+            "Total_videos":  item["statistics"].get("videoCount", 0),
+            # uploads playlist — contains EVERY uploaded video including non-playlist ones
+            "playlist_id":   item["contentDetails"]["relatedPlaylists"]["uploads"],
+        }
+    except KeyError:
+        return None
+
+
+@st.cache_data
+def get_playlist_info(_channel_id, channel_name, playlist_id):
+    """Fetch metadata for a single playlist by playlist_id."""
+    response = safe_api_call(
+        lambda yt: yt.playlists().list(
+            part="snippet,contentDetails,status",
+            id=playlist_id,
+        ).execute(),
+        cost_key="playlists().list",
+    )
+    if not response or not response.get("items"):
+        return None
+    item = response["items"][0]
+    return {
+        "playlist_id":    playlist_id,
+        "playlist_name":  item["snippet"]["title"],
+        "channel_name":   channel_name,
+        "channel_id":     _channel_id,          # ← uses parameter, not global
+        "description":    item["snippet"].get("description", ""),
+        "item_count":     item["contentDetails"].get("itemCount", 0),
+        "privacy_status": item["status"].get("privacyStatus", "public"),
+        "published_at":   item["snippet"].get("publishedAt"),
+        "harvested_at":   datetime.now().isoformat(),
+    }
+
 
 @st.cache_data
 def get_all_playlists_for_channel(_channel_id, channel_name):
+    """Fetch all public playlists the channel has created."""
     playlists = []
     next_page_token = None
     while True:
-        try:
-            def api_fn(yt):
-                return yt.playlists().list(part='snippet,contentDetails,status', channelId=channel_id,
-                    maxResults=50, pageToken=next_page_token)
-            response = safe_api_call(api_fn, cost_key="playlists.list")
-
-            for item in response.get('items', []):
-                playlists.append({"playlist_id": item['id'], "playlist_name": item['snippet']['title'],
-                                  "channel_name": channel_name, "channel_id": channel_id,
-                                  "description": item['snippet'].get('description', ''),
-                                  "item_count": item['contentDetails'].get('itemCount', 0),
-                                  "privacy_status": item['status'].get('privacyStatus', 'public'),
-                                  "published_at": item['snippet'].get('publishedAt'),
-                                  "harvested_at": datetime.now().isoformat()
-                })
-                next_page_token = response.get('nextPageToken')
-                if not next_page_token:
-                    break
-
-        except Exception as e:
-            st.error(f"❌ Playlist fetching failed: {e}")
+        # Capture _channel_id and next_page_token in default args to avoid closure bugs
+        response = safe_api_call(
+            lambda yt, cid=_channel_id, tok=next_page_token: yt.playlists().list(
+                part="snippet,contentDetails,status",
+                channelId=cid,
+                maxResults=50,
+                pageToken=tok,
+            ).execute(),
+            cost_key="playlists().list",
+        )
+        if not response:
+            break
+        for item in response.get("items", []):
+            playlists.append({
+                "playlist_id":    item["id"],
+                "playlist_name":  item["snippet"]["title"],
+                "channel_name":   channel_name,
+                "channel_id":     _channel_id,
+                "description":    item["snippet"].get("description", ""),
+                "item_count":     item["contentDetails"].get("itemCount", 0),
+                "privacy_status": item["status"].get("privacyStatus", "public"),
+                "published_at":   item["snippet"].get("publishedAt"),
+                "harvested_at":   datetime.now().isoformat(),
+            })
+        next_page_token = response.get("nextPageToken")
+        if not next_page_token:
             break
     return playlists
 
 
-# --------------------- Function to get Video Stats -------------------------- #
-@st.cache_data
-def get_video_stats(_playlist_id, max_results=50):
-
+# @st.cache_data
+def get_videos_from_playlist(_playlist_id, max_results=500):
+    """
+    Fetch all video details from a single playlist (or the uploads playlist).
+    Works for both named playlists AND the hidden 'uploads' playlist that
+    contains every video a channel has ever uploaded — including videos that
+    were never added to any named playlist.
+    """
     videos = []
     next_page_token = None
-    count = 0
 
     while True:
-        # PlaylistItems List
-        # def playlist_items_call(yt):
-        #     return lambda yt: yt.playlistItems().list(part="contentDetails",playlistId=playlist_id,
-        #         maxResults=min(max_results - count, 50),pageToken=next_page_token).execute()
+        # Step 1: get a page of video IDs from the playlist
+        playlist_response = safe_api_call(
+            lambda yt, pid=_playlist_id, tok=next_page_token: yt.playlistItems().list(
+                part="snippet,contentDetails",
+                playlistId=pid,
+                maxResults=50,
+                pageToken=tok,
+            ).execute(),
+            cost_key="playlistItems().list",
+        )
+        if not playlist_response:
+            break
 
-        # playlist_response = safe_api_call(playlist_items_call, cost_key="playlistItems.list")
-        playlist_response = safe_api_call(lambda yt: yt.playlistItems().list(
-                            part="snippet,contentDetails", playlistId=_playlist_id, maxResults=min(max_results - count, 50),
-                            pageToken=next_page_token).execute(), cost_key="playlistItems.list")
-
-        video_ids = [item['contentDetails']['videoId'] for item in playlist_response['items']]
-        count += len(video_ids)
-
+        video_ids = [
+            item["contentDetails"]["videoId"]
+            for item in playlist_response.get("items", [])
+        ]
         if not video_ids:
             break
 
-        # Video List
-        # def videos_call(yt):
-        #     return lambda yt: yt.videos().list(part="snippet,contentDetails,statistics", id=",".join(video_ids)).execute()
+        # Step 2: batch-fetch full video details for those IDs
+        video_response = safe_api_call(
+            lambda yt, ids=",".join(video_ids): yt.videos().list(
+                part="snippet,contentDetails,statistics",
+                id=ids,
+            ).execute(),
+            cost_key="videos().list",
+        )
+        if not video_response:
+            break
 
-        video_response = safe_api_call(lambda yt: yt.videos().list(part="snippet,contentDetails,statistics",
-                                        id=",".join(video_ids)).execute(), cost_key="videos.list")
+        for item in video_response.get("items", []):
+            snippet    = item.get("snippet", {})
+            stats      = item.get("statistics", {})
+            content    = item.get("contentDetails", {})
+            videos.append({
+                "video_id":       item["id"],
+                "playlist_id":    _playlist_id,
+                "video_title":    snippet.get("title", ""),
+                "description":    snippet.get("description", ""),
+                "published_at":   snippet.get("publishedAt"),
+                "category_id":    snippet.get("categoryId", 0),
+                "thumbnail":      snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+                "duration":       content.get("duration", "PT0S"),
+                "definition":     content.get("definition", "hd"),
+                "caption_status": content.get("caption", "false"),
+                "licensed_content": str(content.get("licensedContent", False)),
+                "view_count":     int(stats.get("viewCount", 0)),
+                "like_count":     int(stats.get("likeCount", 0)),
+                "dislike_count":  int(stats.get("dislikeCount", 0)),
+                "favorite_count": int(stats.get("favoriteCount", 0)),
+                "comment_count":  int(stats.get("commentCount", 0)),
+            })
 
-        for item in video_response.get('items', []):
-            video_data = {
-                "video_id": item['id'], "video_title": item['snippet']['title'],
-                "published_at": item['snippet']['publishedAt'], "view_count": item['statistics'].get('viewCount', 0),
-                "like_count": item['statistics'].get('likeCount', 0), "comment_count": item['statistics'].get('commentCount', 0),
-                "duration": item['contentDetails']['duration'], "description": item['snippet'].get('description', '')
-            }
-            videos.append(video_data)
+        if len(videos) >= max_results:
+            break
 
-        next_page_token = playlist_response.get('nextPageToken')
+        next_page_token = playlist_response.get("nextPageToken")
         if not next_page_token:
             break
 
     return videos
 
 
-# --- Fetch all playlists from channel ---
-@st.cache_data
-def get_all_playlists(_channel_id):
-    playlists = []
-    def initial_request():
-        return lambda yt: yt.playlists().list(part="snippet,contentDetails", channelId=channel_id, maxResults=50).execute()
-    request = initial_request()
+# @st.cache_data
+def get_comments_for_video(_video_id, max_comments=20):
+    """
+    Fetch up to max_comments top-level comments for a single video.
+    Returns [] silently if comments are disabled on the video.
+    """
+    comments = []
+    next_page_token = None
 
-    while request:
-        response = safe_api_call(request, cost_key="playlists.list")
+    while len(comments) < max_comments:
+        remaining = max_comments - len(comments)
+        try:
+            response = safe_api_call(
+                lambda yt, vid=_video_id, tok=next_page_token, n=min(remaining, 20): yt.commentThreads().list(
+                    part="snippet",
+                    videoId=vid,
+                    maxResults=n,
+                    pageToken=tok,
+                    textFormat="plainText",
+                ).execute(),
+                cost_key="commentThreads().list",
+            )
+        except HttpError as e:
+            # 403 = comments disabled/restricted — skip silently
+            if e.resp.status in [403, 404]:
+                break
+            return None
         if not response:
             break
 
-        for item in response.get('items', []):
-            playlists.append({"playlist_id": item["id"], "playlist_name": item["snippet"]["title"],
-                              "description": item["snippet"].get("description", ""),
-                              "item_count": item["contentDetails"].get("itemCount", 0),
-                              "privacy_status": item.get("status", {}).get("privacyStatus", "public"),
-                              "published_at": item["snippet"]["publishedAt"]})
+        for item in response.get("items", []):
+            top = item["snippet"]["topLevelComment"]["snippet"]
+            comments.append({
+                "comment_id":   item["id"],
+                "video_id":     _video_id,
+                "comment_text": top.get("textDisplay", ""),
+                "author":       top.get("authorDisplayName", ""),
+                "like_count":   top.get("likeCount", 0),
+                "reply_count":  item["snippet"].get("totalReplyCount", 0),
+                "comment_date": top.get("publishedAt"),
+                "is_pinned":    False,
+                "is_hearted":   False,
+            })
 
-        # request = lambda yt: yt.playlists().list_next(request, response)
-    return playlists
+        next_page_token = response.get("nextPageToken")
+        if not next_page_token:
+            break
 
-# --- Fetch all videos from all playlists ---
-@st.cache_data
-def get_all_playlist_videos(_channel_id):
-    all_videos = []
-    all_playlists = get_all_playlists(channel_id)
-    for pl in all_playlists:
-        pl_id = pl["playlist_id"]
-        videos = get_video_stats(pl_id)
-        for v in videos:
-            v["playlist_id"] = pl_id
-        all_videos.extend(videos)
-    return all_videos, all_playlists
+    return comments
 
-# --------------------- Function to get Comments Stats --------------------- #
-@st.cache_data
-def update_comment_stats(_channel_name, video_ids, max_comments_per_video=50):
-    all_comments = []
 
-    for video_id in video_ids:
-        try:
-            next_page_token = None
-            count = 0
+# @st.cache_data(ttl=3600, show_spinner=False)
+def extract_channel_all_details(_channel_id):
+    """
+    Full harvest pipeline for one channel.
 
-            while True:
-                def fetch_comments(yt):
-                    return lambda yt: yt.commentThreads().list(part="snippet", videoId=video_id,
-                        maxResults=min(max_comments_per_video - count, 50), pageToken=next_page_token,
-                        textFormat="plainText").execute()
-                comment_response = safe_api_call(fetch_comments, cost_key="commentThreads.list")
-                if not comment_response:
-                    break
+    Video strategy
+    ──────────────
+    1. Fetch the 'uploads' playlist — this contains EVERY video the channel
+       has ever uploaded, including videos not in any named playlist.
+    2. Also fetch all named playlists (for playlist metadata / relationships).
+    3. Deduplicate videos by video_id so a video appearing in both the uploads
+       playlist and a named playlist is only stored once.
+    """
+    progress = st.progress(0.0, text="📤 Starting YouTube channel harvest...")
 
-                for item in comment_response['items']:
-                    comment = item['snippet']['topLevelComment']['snippet']
-                    comment_data = {"video_id": video_id, "comment_id": item['id'],
-                                    "author": comment.get('authorDisplayName'), "text": comment.get('textDisplay'),
-                                    "like_count": comment.get('likeCount', 0), "published_at": comment.get('publishedAt')}
-                    all_comments.append(comment_data)
-
-                count += len(comment_response['items'])
-
-                next_page_token = comment_response.get('nextPageToken')
-                if not next_page_token:
-                    break
-
-        except Exception as e:
-            print(f"Failed to fetch comments for video {video_id}: {e}")
-            continue
-
-    return all_comments
-
-# ----------- Function to get all the channel video details -------------- #
-@st.cache_data(ttl=3600, show_spinner=False)
-def extract_channel_all_details(_channel_id, use_uploaded_playlist_only=True):
-    # ---- 1. Getting Channel Statistics ---- #
-    progress_bar_extract = st.progress(0.0, text="📤 Starting Youtube channel Harvesting...")
-    with st.spinner('Fetching channel statistics...'):
-        # channel_statistics = safe_api_call(lambda yt: get_channel_stats(yt, channel_id), "channels().list")
-        channel_statistics = get_channel_stats(channel_id)
-        if not channel_statistics:
+    # ── 1. Channel statistics ──────────────────────────────────────────────
+    with st.spinner("Fetching channel statistics..."):
+        channel_stats = get_channel_stats(_channel_id)
+        if not channel_stats:
             st.warning("⚠️ Channel statistics not available.")
             return None
-        # uploads_playlist_id = channel_statistics.get('playlist_id') # This is the uploads playlist
-        channel_name = channel_statistics.get("Channel_name", "Unknown")
-        if not channel_name:
-            st.error("❌ Channel name missing. Cannot continue.")
-            return None
-    progress_bar_extract.progress(0.05, "✅ Channel stats fetched...")
+        channel_name     = channel_stats.get("Channel_name", "Unknown")
+        uploads_pl_id    = channel_stats.get("playlist_id")   # hidden uploads playlist
+    progress.progress(0.05, "✅ Channel stats fetched.")
 
-    # ---- 2. Fetch Playlist and Videos ---- #
-    # all_playlists = []
-    # all_videos = []
-    #
-    # if use_uploaded_playlist_only:
-    #     with st.spinner("📂 Fetching videos from uploads playlist..."):
-    #         progress_bar_extract.progress(0.10, "Fetching all uploaded videos...")
-    #         uploads_playlist_id = channel_statistics.get("playlist_id")
-    #         all_playlists = [{"playlist_id": uploads_playlist_id, "playlist_name": "Uploads",
-    #                           "description": "Default upload playlist", "item_count": channel_statistics.get("Total_videos", 0),
-    #                           "privacy_status": "public", "published_at": channel_statistics.get("published_at", "")}]
-    #
-    #         # videos = safe_api_call(lambda yt: get_video_stats(yt, uploads_playlist_id), "playlistItems.list")
-    #         videos = get_video_stats(uploads_playlist_id)
-    #         if videos:
-    #             all_videos.extend(videos)
-    #     progress_bar_extract.progress(0.40, "✅ All Uploaded videos fetched.")
-    #
-    # else:
-    #     with st.spinner("📂 Fetching all playlists and their videos..."):
-    #         progress_bar_extract.progress(0.10, "Fetching all playlists and their videos...")
-    #         # playlists = safe_api_call(lambda yt: get_all_playlists_for_channel(yt, channel_name, channel_id), "playlists.list")
-    #         playlists = get_all_playlists_for_channel(channel_id, channel_name)
-    #         if not playlists:
-    #             st.warning("⚠️ No playlists found.")
-    #             return None
-    #
-    #         all_playlists.extend(playlists)
-    #         total_playlists = len(playlists)
-    #
-    #         for idx, playlist in enumerate(playlists):
-    #             pid = playlist.get("playlist_id")
-    #
-    #             # videos = safe_api_call(lambda yt: get_video_stats(yt, pid), "playlistItems.list")
-    #             videos = get_video_stats(pid)
-    #             if videos:
-    #                 all_videos.extend(videos)
-    #             pct = 0.11 + (0.20 * ((idx + 1) / total_playlists))
-    #             progress_bar_extract.progress(pct, f"Fetched videos from playlist {idx + 1}/{total_playlists}")
-    #     progress_bar_extract.progress(0.40, "✅ All playlists and their videos fetched.")
-    with st.spinner('📂 Fetching all playlists and videos...'):
-        result = get_all_playlist_videos(_channel_id)
-        # result = safe_api_call(lambda yt: get_all_playlist_videos(yt, channel_id), cost_key="playlists().list")
-        if not result:
-            return None
-        all_videos, all_playlists = result
-        video_ids = [v.get("video_id") for v in all_videos if v.get("video_id")]
+    # ── 2. Named playlists ────────────────────────────────────────────────
+    with st.spinner("📂 Fetching all named playlists..."):
+        named_playlists = get_all_playlists_for_channel(_channel_id, channel_name)
+    progress.progress(0.15, f"✅ {len(named_playlists)} named playlist(s) found.")
 
-    with st.spinner('💬 Fetching all comments for each video...'):
-        all_comments = []
-        for vid in video_ids:
-            comment_data = update_comment_stats(_channel_id, video_ids)
-            # comment_data = safe_api_call(lambda yt: update_comment_stats(yt, vid), cost_key="commentThreads().list")
-            if comment_data:
-                for comment in comment_data:
-                    all_comments.append(comment)
+    # ── 3. Videos from ALL named playlists ───────────────────────────────
+    all_videos_map = {}   # keyed by video_id for deduplication
 
-    # ----3. Fetch comments for each Video ------ #
-    # video_ids = [v.get("video_id") for v in all_videos if v.get("video_id") and v.get("video_id") != "-" and v.get("video_id") != "_"]
-    # # video_ids = []
-    # invalid_video_ids = []
-    #
-    # for v in all_videos:
-    #     vid = v.get("video_id", "")
-    #     if is_valid_video_id(vid):
-    #         video_ids.append(vid)
-    #     else:
-    #         invalid_video_ids.append(vid)
-    #
-    # if invalid_video_ids:
-    #     st.warning(f"⚠️ {len(invalid_video_ids)} invalid video IDs were skipped.")
-    #     mg_yth_db["invalid_video_ids"].insert_one({"channel_id": channel_id, "channel_name": channel_name,
-    #                                                "invalid_ids": invalid_video_ids, "timestamp": datetime.now().isoformat()})
-    # st.write("🧪 Video IDs for comment extraction:", video_ids)
-    # st.write("🎞️ Total videos:", len(all_videos))
-    # comment_statistics = []
-    #
-    # if video_ids:
-    #     with st.spinner("💬 Fetching comments for each video..."):
-    #         for i, vid in enumerate(video_ids):
-    #             # comments = safe_api_call(lambda yt: update_comment_stats(yt, vid, channel_name, max_comments_per_video=50), "commentThreads.list")
-    #             comments = update_comment_stats(channel_name, vid, max_comments_per_video=50)
-    #             if comments:
-    #                 comment_statistics.extend(comments)
-    #             progress = 0.40 + (0.30 * ((i + 1) / len(video_ids)))
-    #             progress_bar_extract.progress(progress, f"Fetched comments for video {i + 1}/{len(video_ids)}")
-    #     progress_bar_extract.progress(0.90, "✅ Comments for all videos fetched.")
-    # else:
-    #     st.warning("⚠️ No videos found.")
+    total_named = len(named_playlists)
+    for idx, pl in enumerate(named_playlists):
+        pid = pl["playlist_id"]
+        with st.spinner(f"📹 Fetching videos from playlist {idx + 1}/{total_named}: {pl['playlist_name']}"):
+            pl_videos = get_videos_from_playlist(pid)
+            for v in pl_videos:
+                all_videos_map[v["video_id"]] = v
+        pct = 0.15 + 0.25 * ((idx + 1) / max(total_named, 1))
+        progress.progress(pct, f"Playlist {idx + 1}/{total_named} done.")
 
-    # ----- Pack into a single dictionary ----- #
+    # ── 4. Videos from uploads playlist (catches non-playlist uploads) ────
+    with st.spinner("📹 Fetching all uploaded videos (including those not in any playlist)..."):
+        if uploads_pl_id:
+            upload_videos = get_videos_from_playlist(uploads_pl_id)
+            new_count = 0
+            for v in upload_videos:
+                if v["video_id"] not in all_videos_map:
+                    # Mark that this video has no named playlist
+                    v["playlist_id"] = None
+                    all_videos_map[v["video_id"]] = v
+                    new_count += 1
+            if new_count:
+                st.info(f"ℹ️ {new_count} additional video(s) found outside named playlists.")
+    progress.progress(0.45, f"✅ {len(all_videos_map)} unique video(s) collected.")
+
+    all_videos  = list(all_videos_map.values())
+    video_ids   = [v["video_id"] for v in all_videos]
+
+    # Validate video IDs
+    valid_ids   = [vid for vid in video_ids if is_valid_video_id(vid)]
+    skipped     = len(video_ids) - len(valid_ids)
+    if skipped:
+        st.warning(f"⚠️ {skipped} invalid video ID(s) skipped.")
+    video_ids = valid_ids
+
+    # ── 5. Comments for each video ────────────────────────────────────────
+    all_comments = []
+    total_vids   = len(video_ids)
+    with st.spinner("💬 Fetching comments..."):
+        for i, vid in enumerate(video_ids):
+            vid_comments = get_comments_for_video(vid, max_comments=50)
+            all_comments.extend(vid_comments)
+            pct = 0.45 + 0.45 * ((i + 1) / max(total_vids, 1))
+            progress.progress(pct, f"Comments: video {i + 1}/{total_vids}")
+    progress.progress(0.95, "✅ Comments fetched.")
+
+    # ── 6. Pack result ────────────────────────────────────────────────────
     channel_data = {
-        'Channel_info': channel_statistics, 'playlist_info': all_playlists , 'Video_info': all_videos,
-        'Comment_info': all_comments,
-        'Meta': {
-            'Total Videos': len(all_videos), 'Total Comments': len(all_comments)},
-        'last_updated': datetime.now().isoformat() # Added Timestamps for Tracking Updates
+        "Channel_info":  channel_stats,
+        "playlist_info": named_playlists,
+        "Video_info":    all_videos,
+        "Comment_info":  all_comments,
+        "Meta": {
+            "Total_Videos":   len(all_videos),
+            "Total_Comments": len(all_comments),
+        },
+        "last_updated": datetime.now().isoformat(),
     }
-    # ------ Log success to MongoDB -------#
+
+    # Audit log
     mg_yth_db["audit_logs"].insert_one({
-        "channel_id": channel_id,
-        "channel_name": channel_name,
-        "status": "success",
-        "video_count": len(all_videos),
+        "channel_id":    _channel_id,
+        "channel_name":  channel_name,
+        "status":        "success",
+        "video_count":   len(all_videos),
         "comment_count": len(all_comments),
-        "timestamp": datetime.now().isoformat()
+        "timestamp":     datetime.now().isoformat(),
     })
 
-    progress_bar_extract.progress(1.00, "✅ Channel Data created and log stored successfully in MonngoDB.")
+    progress.progress(1.0, "✅ Harvest complete!")
     return channel_data
 
-# ---------------------------------- Streamlit UI -------------------------------------- #
-# -------------------------------------------------------------------------------------- #
-# ------------------------ Streamlit Sidebar Menu and YDH_DB --------------------------- #
-st.set_page_config(page_title="Youtube_Data_Harvesting", layout="wide")
+
+# ============================================================
+# Streamlit UI
+# ============================================================
+
+st.set_page_config(page_title="YouTube Data Harvesting", layout="wide")
 
 with st.sidebar:
-    selected = option_menu(menu_title="Youtube_Data_Harvesting Menu", options=["Home","---", "YDH_DB", "---","Contact"],
-        icons=["house", "upload", "envelope"], # "gear",
-        menu_icon="cast", default_index=0,
+    selected = option_menu(
+        menu_title="YouTube Data Harvesting",
+        options=["Home", "---", "YDH_DB", "---", "Contact"],
+        icons=["house", "upload", "envelope"],
+        menu_icon="cast",
+        default_index=0,
         orientation="vertical",
-        styles={"container": {"padding": "0!important", "background-color": "#AFBFAB"},
-            "icon": {"color": "orange", "font-size": "15px"},
-            "nav-link": {
-                "font-size": "15px",
-                "text-align": "left",
-                "margin": "5px",
-                "--hover-color": "#eee",
-            },
-            "nav-link-selected": {"background-color": "grey"},
+        styles={
+            "container":          {"padding": "0!important", "background-color": "#AFBFAB"},
+            "icon":               {"color": "orange", "font-size": "15px"},
+            "nav-link":           {"font-size": "15px", "text-align": "left", "margin": "5px", "--hover-color": "#eee"},
+            "nav-link-selected":  {"background-color": "grey"},
         },
     )
 
-# Set default value for api_status on first run
+# ---- Session state defaults ---- #
 if "api_status" not in st.session_state:
-    st.session_state.api_status = "🕒 Waiting for Test YouTube API Connection response..."
-
-# Initialize session state variable on first run
+    st.session_state.api_status = "🕒 Waiting for API connection test..."
 if "tested_channel_name" not in st.session_state:
     st.session_state.tested_channel_name = "No Channel to Display"
-# Initialize quota tracking on first run
 if "quota_used" not in st.session_state:
     st.session_state.quota_used = 0
-def update_quota(units_used, endpoint=""):
-    st.session_state.quota_used += units_used
-    # print(f"🧮 Used {units_used} units for {endpoint}. Total quota used: {st.session_state.quota_used}")
+if "extracted_data" not in st.session_state:
+    st.session_state.extracted_data = {}
+if "extracted_channel_id" not in st.session_state:
+    st.session_state.extracted_channel_id = None
+if "delete_requested" not in st.session_state:
+    st.session_state.delete_requested = None
 
-# ------------- YouTube Data Harvessting DataBase Section -------------- #
+# ==============================
+# HOME
+# ==============================
+if selected == "Home":
+    st.header("Project: YouTube Data Harvesting")
+    st.markdown("""
+    This application allows you to:
+    - 🔍 Search and extract data from YouTube channels via the Google API
+    - 🍃 Store harvested data in **MongoDB** (data lake)
+    - 🐘 Migrate data to **PostgreSQL** (data warehouse)
+    - 📊 Analyse channel data using pre-built SQL queries
+    """)
+
+
+# ==============================
+# YDH_DB
+# ==============================
 if selected == "YDH_DB":
-    selected = option_menu(menu_title="Youtube_Data_Harvesting_DataBase Menu",
-        options=["YT Channel Extractor", "Mongo Manager", "Postgres Manager", "YT Channel Analyzer"],
-        icons=["database", "database-add", "gear"], menu_icon="database-gear",
-        default_index=0, orientation="horizontal")
+    selected = option_menu(
+        menu_title="YouTube Data Harvesting DB",
+        options=["YT Channel Extractor", "DB Manager", "YT Channel Analyzer"],
+        icons=["cloud-download", "database-gear", "bar-chart"],
+        menu_icon="database-gear",
+        default_index=0,
+        orientation="horizontal",
+    )
 
-# ----------------- Search and Extract Youtube Channel ---------------- #
+    # ──────────────────────────────────────────────
+    # TAB 1 — YT Channel Extractor
+    # ──────────────────────────────────────────────
     if selected == "YT Channel Extractor":
-        st.markdown("## API Key Check")
-        # api_status = "Waiting for Test YouTube API Connection response..."
-        col1, col2 = st.columns([1,3])
-        with col1:
-            if st.button("Test YouTube API Connection Status"):
-                try:
-                    # Try a basic call using Google Developers Channel ID
-                    test_channel_id = "UC_x5XG1OV2P6uZZ5FSM9Ttw"
-                    # response = youtube_api.channels().list(part="snippet", id=test_channel_id).execute()
-                    response = safe_api_call(lambda yt: yt.channels().list(part="snippet", id=test_channel_id).execute(),
-                        cost_key="channels().list")
+        st.markdown("### 🔍 YouTube Channel Extractor")
+        st.caption("Use this tab to test your API, monitor quota, search and harvest YouTube channels.")
+        # ── Custom CSS for section cards ──────────────────────────────────────
+        # ════════════════════════════════════════════
+        # SECTION 1 — YouTube API Connection Test
+        # ════════════════════════════════════════════
+        with st.container(border=True):
+            # Section header row
+            sec1_col_icon, sec1_col_title = st.columns([0.05, 0.95])
+            with sec1_col_icon:
+                st.markdown("### 🔌")
+            with sec1_col_title:
+                st.markdown("#### Section 1 · YouTube API Connection Test")
+                st.caption("Verify your YouTube API key is valid before starting extraction.")
+            # st.divider()
+            col1, col2, col3 = st.columns([1, 1, 2])
+            with col1:
+                test_btn = st.button(
+                    "▶ Test YT API",
+                    use_container_width=True,
+                    help="Sends a test request to YouTube API using your configured key",
+                )
+            with col2:
+                reset_btn = st.button(
+                    "↺ Reset Status",
+                    use_container_width=True,
+                    help="Clear the current API status display",
+                )
 
-                    if response and response.get('items'):
-                        channel_info = response['items'][0]['snippet']
-                        # test_channel_name = st.write(f"**Channel Name:** {channel_info['title']}")
-                        test_channel_name = channel_info.get('title')
-                        # st.success("✅ YouTube API key is valid!")
-                        st.session_state.api_status = "✅ YouTube API key is valid, API connection is established!, Good to Process..."
-                        st.session_state.tested_channel_name = test_channel_name  # ✅ Store tested channel name
-                    else:
-                        st.session_state.api_status = "⚠️ API call returned no items."
+            if test_btn:
+                with st.spinner("Testing YouTube API connection..."):
+                    try:
+                        test_resp = safe_api_call(
+                            lambda yt: yt.channels().list(
+                                part="snippet", id="UC_x5XG1OV2P6uZZ5FSM9Ttw"
+                            ).execute(),
+                            cost_key="channels().list",
+                        )
+                        if test_resp and test_resp.get("items"):
+                            name = test_resp["items"][0]["snippet"]["title"]
+                            st.session_state.api_status = "success"
+                            st.session_state.tested_channel_name = name
+                        else:
+                            st.session_state.api_status = "warning"
+                            st.session_state.tested_channel_name = "No Channel to Display"
+                    except Exception as e:
+                        st.session_state.api_status = "error"
                         st.session_state.tested_channel_name = "No Channel to Display"
-                except Exception as e:
-                    st.session_state.api_status = st.error(f"❌ YouTube API test failed: {e}")
-                    st.session_state.tested_channel_name = "No Channel to Display"  # Clear it if failed
-        with col2:
-            if st.button("Reset YouTube API Connection Status"):
-                st.session_state.api_status = "🕒 Waiting for Test YouTube API Connection response..."
+
+            if reset_btn:
+                st.session_state.api_status = "idle"
                 st.session_state.tested_channel_name = "No Channel to Display"
-        st.markdown(st.session_state.api_status)
-        # Show tested channel name if available
-        if "tested_channel_name" in st.session_state and st.session_state.tested_channel_name:
-            st.markdown(f"**Tested Channel Name:** `{st.session_state.tested_channel_name}`")
 
-        # ---- API Quota Usage ---- #
-        show_quota_usage()
+            # Status display using native Streamlit callouts
+            status = st.session_state.get("api_status", "idle")
+            tested_name = st.session_state.get("tested_channel_name", "No Channel to Display")
 
-        col1, col2, col3 = st.columns([4, 1, 2])
-        with col1:
-            st.subheader("🔍 Search and Extract Youtube Channel")
-            channel_id = st.text_input("Enter Channel Id:")
-
-        col4, col5, col6, col7 = st.columns([4, 4, 3, 3])
-        with col4:
-            Search = st.button("Search Youtube Channel")
-
-        with col5:
-            Extract = st.button("Extract Youtube Channel")
-            store_pgsql = st.checkbox("📦 Store extracted data in PostgreSQL")
-            export_json = st.checkbox("🗃️ Export data as JSON")
-
-        if Search and channel_id:
-            # view_data = safe_api_call(get_channel_stats,youtube_api, channel_id)
-            view_data = get_channel_stats(channel_id)
-            if view_data:
-                view_data_df = pd.DataFrame([view_data]).T
-                st.success("Found Youtube Channel")
-                st.dataframe(view_data_df[1:-1].style.background_gradient())
-                # st.table(view_data_df)
+            if status == "success":
+                st.success(f"✅ API connection valid — Tested on channel: **{tested_name}**")
+            elif status == "warning":
+                st.warning("⚠️ API call returned no items. Check your key restrictions.")
+            elif status == "error":
+                st.error("❌ API test failed. Check your key in secrets.toml.")
             else:
-                st.error("Youtube Channel not found. Check the ID and try again.", icon="🚨")
-        elif Search and not channel_id:
-            st.warning("⚠️ Please enter a Channel ID to search.")
+                st.info("🕒 Click **Test YT API** to verify your connection before extracting.")
+        # ════════════════════════════════════════════
+        # SECTION 2 — YouTube API Quota Counter
+        # ════════════════════════════════════════════
+        with st.container(border=True):
+            sec2_col_icon, sec2_col_title = st.columns([0.05, 0.95])
+            with sec2_col_icon:
+                st.markdown("#### 📊")
+            with sec2_col_title:
+                st.markdown("#### Section 2 · YouTube API Quota Monitor")
+                st.caption("Track daily quota usage across both Google Cloud projects (20,000 units total).")
+            show_quota_usage()
+        # ════════════════════════════════════════════
+        # SECTION 3 — Channel Search & Extraction
+        # ════════════════════════════════════════════
+        with st.container(border=True):
+            sec3_col_icon, sec3_col_title = st.columns([0.05, 0.95])
+            with sec3_col_icon:
+                st.markdown("#### 🔍")
+            with sec3_col_title:
+                st.markdown("#### Section 3 · YouTube Channel Search & Extraction")
+                st.caption("Enter a YouTube Channel ID to search or fully harvest it into MongoDB.")
+            # st.divider()
+            # Input
+            channel_id = st.text_input(
+                "YouTube Channel ID",
+                placeholder="e.g. UCQhpnItclGAUn4NdGGcEyPQ",
+                help="Find the Channel ID from the channel's About page or URL",
+            )
 
-        if Extract and channel_id:
-            # extracted_data = safe_api_call(extract_channel_all_details,youtube_api, channel_id)
-            # extracted_data = extract_channel_all_details(youtube_api, channel_id)
-            extracted_data = extract_channel_all_details(channel_id)
+            # Action buttons + options
+            act_c1, act_c2 = st.columns([1, 2])
+            with act_c1:
+                Search = st.button("🔎 Search Channel", use_container_width=True)
+            with act_c2:
+                Extract = st.button("⬇️ Extract & Save to MongoDB", use_container_width=True)
 
-            if extracted_data:
-                channel_name = extracted_data.get('Channel_info', {}).get('Channel_name')
-                if not channel_name:
-                    st.error("❌ Channel name is missing in extracted data. Cannot proceed with storage.")
-                    st.stop()
+            opt_c1, opt_c2, opt_c3 = st.columns([1, 1, 1])
+            with opt_c1:
+                store_pgsql = st.checkbox("📦 Also store in PostgreSQL")
+            with opt_c2:
+                export_json = st.checkbox("🗃️ Export as JSON")
+            with opt_c3:
+                if st.button("🧹 Clear Extraction Cache", use_container_width=True,
+                             help="Clears cached API responses — forces a fresh fetch on next extraction"):
+                    st.cache_data.clear()
+                    st.success("✅ Cache cleared. Next extraction will fetch fresh data from YouTube.")
+            st.info("💡 Clear Cache Before every New attempt / Channel Extraction")
 
-                # ---- Separate MongoDB Collections for channel, playlist, videos, comments ---- #
-                # ---- Save metadata with timestamp ---- #
-                channel_info = extracted_data.get('Channel_info', {})
-                mg_yth_db[f"{channel_name}_meta"].delete_many({})
-                mg_yth_db[f"{channel_name}_meta"].insert_one({
-                    "Channel_name": channel_info.get('Channel_name'), "Subscribers": channel_info.get('Subscribers'),
-                    "Views": channel_info.get('Views'), "Total_videos": channel_info.get('Total_videos'),
-                    "Harvested_at": datetime.now().isoformat()})
+            # ── Search ───────────────────────────────────────
+            if Search and channel_id:
+                with st.spinner("Searching channel..."):
+                    view_data = get_channel_stats(channel_id)
+                if view_data:
+                    st.success("✅ Channel found!")
+                    st.metric("📺 Channel", view_data.get("Channel_name", "—"))
+                    s1, s2, s3 = st.columns(3)
+                    # s1.metric("📺 Channel", view_data.get("Channel_name", "—"))
+                    s1.metric("👥 Subscribers", f"{int(view_data.get('Subscribers', 0)):,}")
+                    s2.metric("👁️ Total Views", f"{int(view_data.get('Views', 0)):,}")
+                    s3.metric("🎞️ Videos", view_data.get("Total_videos", "—"))
+                else:
+                    st.error("❌ Channel not found. Check the ID and try again.", icon="🚨")
+            elif Search:
+                st.warning("⚠️ Please enter a Channel ID to search.")
 
-                # ---- Save separate playlist collection ---- #
-                playlist_info = extracted_data.get('playlist_info')
-                if playlist_info:
+            # ── Extract ──────────────────────────────────────
+            if Extract and channel_id:
+                extracted_data = extract_channel_all_details(channel_id)
+
+                if extracted_data:
+                    # Save to session state
+                    st.session_state.extracted_data = extracted_data
+                    st.session_state.extracted_channel_id = channel_id
+
+                    channel_name = extracted_data.get("Channel_info", {}).get("Channel_name")
+                    if not channel_name:
+                        st.error("❌ Channel name missing. Cannot store.")
+                        st.stop()
+
+                    channel_info = extracted_data["Channel_info"]
+
+                    # MongoDB saves
+                    mg_yth_db[f"{channel_name}_meta"].delete_many({})
+                    mg_yth_db[f"{channel_name}_meta"].insert_one({
+                        "Channel_Id": channel_info.get("Channel_Id"),
+                        "Channel_name": channel_info.get("Channel_name"),
+                        "Subscribers": channel_info.get("Subscribers"),
+                        "Views": channel_info.get("Views"),
+                        "Total_videos": channel_info.get("Total_videos"),
+                        "Harvested_at": datetime.now().isoformat(),
+                    })
+                    playlist_info = extracted_data.get("playlist_info", [])
                     mg_yth_db[f"{channel_name}_playlist"].delete_many({})
-                    if isinstance(playlist_info, list):
+                    if playlist_info:
                         mg_yth_db[f"{channel_name}_playlist"].insert_many(playlist_info)
-                    elif isinstance(playlist_info, dict):
-                        mg_yth_db[f"{channel_name}_playlist"].insert_one(playlist_info)
-                    else:
-                        st.warning("⚠️ Playlist info is in an unexpected format.")
-                #     mg_yth_db[f"{channel_name}_playlist"].insert_many(playlist_info)
-                # else:
-                #     st.warning("⚠️ Playlist info not available for this channel.")
 
-                # mg_yth_db[f"{channel_name}_playlist"].delete_many({})
-                # mg_yth_db[f"{channel_name}_playlist"].insert_one(extracted_data['playlist_info'])
-
-                # ---- Save separate videos collection ---- #
-                # mg_yth_db[f"{channel_name}_videos"].delete_many({})
-                # if 'Video_info' in extracted_data and extracted_data['Video_info']:
-                #     mg_yth_db[f"{channel_name}_videos"].insert_many(extracted_data['Video_info'])
-                mg_yth_db[f"{channel_name}_videos"].delete_many({})
-                videos = extracted_data.get('Video_info')
-                if videos:
-                    if isinstance(videos, list):
+                    videos = extracted_data.get("Video_info", [])
+                    mg_yth_db[f"{channel_name}_videos"].delete_many({})
+                    if videos:
                         mg_yth_db[f"{channel_name}_videos"].insert_many(videos)
-                    elif isinstance(videos, dict):
-                        mg_yth_db[f"{channel_name}_videos"].insert_one(videos)
-                    else:
-                        st.warning("⚠️ Unexpected format in Video_info.")
 
-                # ---- Save separate comments collection ---- #
-                # mg_yth_db[f"{channel_name}_comments"].delete_many({})
-                # if 'Comment_info' in extracted_data and extracted_data['Comment_info']:
-                #     mg_yth_db[f"{channel_name}_comments"].insert_many(extracted_data['Comment_info'])
-
-                mg_yth_db[f"{channel_name}_comments"].delete_many({})
-                comments = extracted_data.get('Comment_info')
-                # Debug: log the channel info before insert
-                st.write("🛠️ Debug - Comments:", comments)
-                if comments:
-                    if isinstance(comments, list):
+                    comments = extracted_data.get("Comment_info", [])
+                    mg_yth_db[f"{channel_name}_comments"].delete_many({})
+                    if comments:
                         mg_yth_db[f"{channel_name}_comments"].insert_many(comments)
-                    elif isinstance(comments, dict):
-                        # mg_yth_db[f"{channel_name}_comments"].insert_one(comments)
-                        mg_yth_db[f"{channel_name}_comments"].insert_many(comments)
-                    else:
-                        st.warning("⚠️ Unexpected format in Comment_info.")
-                st.success("✅ Harvest complete and saved to MongoDB")
 
-                # ---- Summary ---- #
-                st.write(f"📺 Channel: {channel_name}")
-                # st.info(f"📊 Total API Calls Used: {api_counter['calls']}")
-                st.write(f"🎞️ Videos: {len(extracted_data.get('Video_info', []))}")
-                st.write(f"💬 Comments: {len(extracted_data.get('Comment_info', []))}")
-                # st.write(f"🎞️ Videos: {len(videos)}")
-                # st.write(f"💬 Comments: {len(comments)}")
+                    # Result summary metrics
+                    st.success("✅ Harvest complete and saved to MongoDB!")
+                    r1, r2, r3 = st.columns(3)
+                    r1.metric("📺 Channel", channel_name)
+                    r2.metric("🎞️ Videos Harvested", len(videos),
+                              help="Includes videos outside named playlists")
+                    r3.metric("💬 Comments Harvested", len(comments))
 
-                # --- Direct PostgreSQL storage - Basic Channel Info Option ---- #
-                if store_pgsql:
-                    try:
-                        with init_connection() as conn:
-                            store_postgresql_direct(conn, extracted_data)
+                    # Optional direct storage to PostgreSQL - Basic info
+                    if store_pgsql:
+                        try:
+                            with init_connection() as conn:
+                                store_postgresql_direct(conn, extracted_data)
+                        except Exception as e:
+                            st.error(f"❌ PostgreSQL storage failed: {e}")
 
-                        # st.success("✅ Basic Channel Data stored in PostgreSQL")
-                    except Exception as e:
-                        st.error(f"❌ PostgreSQL storage failed: {e}")
+                else:
+                    st.error("❌ Extraction failed. Check the Channel ID and try again.", icon="🚨")
 
-                # ----  Plot Preview Option ---- #
-                st.markdown("📋 Plot Charts for Top 10 Videos by Views ")
-                display_plot = st.button("Display Plots")
-                if display_plot:
-                    video_df = pd.DataFrame(extracted_data.get('Video_info', []))
-                    if not video_df.empty and 'view_count' in video_df.columns:
-                        video_df['view_count'] = pd.to_numeric(video_df.get('view_count', 0), errors='coerce')
-                        top_videos = video_df.sort_values(by='view_count', ascending=False).head(10)
-                        fig = px.bar(top_videos, x='video_title', y='view_count', title='Top 10 Videos by Views')
-                        fig.update_layout(xaxis_tickangle=45)
-                        st.plotly_chart(fig)
-                    else:
-                        st.warning("⚠️ No valid video data available.")
+            elif Extract and not channel_id:
+                st.warning("⚠️ Please enter a Channel ID to extract.")
 
-                # ---- Channel Preview Option - Json and Dataframe ---- #
-                st.markdown("📋 Channel Info")
-                col1, col2, col3 = st.columns([1, 1, 2])
-                with col1:
-                    display_json = st.button("Display Extracted Json Channel Info for Reference")
-                with col3:
-                    display_dataframe = st.button("Display Extracted Channel Info as DataFrame for Reference")
-                if display_json:
-                    st.json(extracted_data)  # or use st.dataframe if tabular
-                if display_dataframe:
-                    st.dataframe(extracted_data)
-
-                # ---- Download JSON File Option ---- #
-                def convert_bson(obj):
-                    if isinstance(obj, bson.ObjectId):
-                        return str(obj)
-                    if isinstance(obj, datetime):
-                        return obj.isoformat()
-                    raise TypeError(f"Type {type(obj)} not serializable")
-
+            #------- JSON download — always visible if data exists in session state ---- #
+            _dl_data = st.session_state.get("extracted_data", {})
+            _dl_channel_id = st.session_state.get("extracted_channel_id", "channel")
+            if _dl_data:
                 if export_json:
-                    try:
-                        json_data = json.dumps(extracted_data, indent=2, default=str)
-                        st.download_button(label="📥 Download Extracted Data (JSON)", data=json_data,
-                                           file_name=f"{channel_id}_youtube_data.json", mime="application/json")
-                    except Exception as e:
-                        st.error(f"❌ JSON export failed: {e}")
-                # st.download_button("Download JSON", json.dumps(extracted_data, indent=2, default=convert_bson), f"{channel_name}_data.json")
-
+                    json_data = json.dumps(_dl_data, indent=2, default=str)
+                    st.download_button(
+                        label="📥 Download Extracted Data as JSON",
+                        data=json_data,
+                        file_name=f"{_dl_channel_id}_youtube_data.json",
+                        mime="application/json",
+                        use_container_width=True,
+                    )
+                    st.info("💡 Go to **DB Manager → MongoDB Manager** to view videos, comments and charts.")
+                else:
+                    st.caption("💡 Tick the 'Export data as JSON' checkbox above to enable download.")
             else:
-                st.error("Youtube Channel not found. Check the ID and try again. or failed to retrieve.", icon="🚨")
-                st.stop()
-        elif Extract and not channel_id:
-            st.warning("⚠️ Please enter a Channel ID to extract.")
+                st.info("💡 Extract a channel first to enable JSON download.")
 
-# ----------- Manage Harvested YouTube channels in MongoDB ------------ #
-    if selected == "Mongo Manager":
-        st.markdown("### Manage MongoDB ")
-        col1, col2, col3 = st.columns([4, 1, 2])
-        with col1:
-            collection_names = mg_yth_db.list_collection_names()
-            user_channels = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
-            selected_channel_mongodb = st.selectbox("Select a Youtube channel", user_channels)
+    # ──────────────────────────────────────────────
+    # TAB 2 — Mongo Manager
+    # ──────────────────────────────────────────────
+    if selected == "DB Manager":
+        st.markdown("### 🗄️ Database Manager")
+        st.caption("Manage harvested channel data in MongoDB and migrate it to PostgreSQL.")
 
-        col4, col5, col6, _ = st.columns([1, 1, 3, 0.2])
-        with col4:
-            view_basic_channel_details = st.button("View Basic Detail")
+        # Shared channel list — used by both sub-tabs
+        all_harvested = [
+            c.replace("_meta", "")
+            for c in mg_yth_db.list_collection_names()
+            if c.endswith("_meta")
+        ]
+        if not all_harvested:
+            st.info("ℹ️ No harvested channels found in MongoDB. Go to YT Channel Extractor first.")
+        else:
+            mongo_tab, pg_tab = st.tabs(["🍃 MongoDB Manager", "🐘 PostgreSQL Manager"])
+            # ── MongoDB Manager ──────────────────────────────
+            with mongo_tab:
+                # st.markdown("#### Manage Harvested Channels in MongoDB")
+                st.markdown("#### 🍃 MongoDB Manager")
+                st.caption("View and manage harvested channel data stored in MongoDB.")
 
-        with col5:
-            view_detailed_channel_details = st.button("View Complete Details")
+                # ── Channel Selector Section ──────────────────────
+                with st.container(border=True):
+                    sec_icon, sec_title = st.columns([0.05, 0.95])
+                    with sec_icon:
+                        st.markdown("#### 📋")
+                    with sec_title:
+                        st.markdown("#### Channel Selection")
+                        st.caption("Choose a harvested channel to inspect or delete.")
 
-        with col6:
-            delete_selected_channel = st.button("Delete Youtube Channel")
+                    # st.divider()
 
-        if view_detailed_channel_details:
+                    selected_channel_mg = st.selectbox(
+                        "Harvested Channels", all_harvested, key="mg_select",
+                        help="Only channels already extracted and saved to MongoDB appear here",
+                    )
 
-            doc = mg_yth_db[selected_channel_mongodb].find_one()
-            # st.subheader("Channel Info")
-            # st.json(doc)
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        view_basic = st.button("📄 View Basic Info", use_container_width=True)
+                    with col2:
+                        view_full = st.button("📊 View Full Data", use_container_width=True)
+                    with col3:
+                        delete_ch = st.button("🗑️ Delete Channel", use_container_width=True,
+                                              help="Permanently removes all collections for this channel from MongoDB")
 
-            video_collection = selected_channel_mongodb.replace("_meta", "_videos")
-            if video_collection in mg_yth_db.list_collection_names():
-                videos_df = pd.DataFrame(mg_yth_db[video_collection].find())
-                st.subheader("Video Data")
-                st.dataframe(videos_df)
+                # ── Channel Basic Info ────────────────────
+                if view_basic and selected_channel_mg:
+                    with st.container(border=True):
+                        sec_icon, sec_title = st.columns([0.05, 0.95])
+                        with sec_icon:
+                            st.markdown("### 📄")
+                        with sec_title:
+                            st.markdown(f"### Basic Info — {selected_channel_mg}")
+                            st.caption("Channel metadata and collection counts from MongoDB.")
 
-            comment_collection = selected_channel_mongodb.replace("_meta", "_comments")
-            if comment_collection in mg_yth_db.list_collection_names():
-                comments_df = pd.DataFrame(mg_yth_db[comment_collection].find())
-                st.subheader("Comment Data")
-                st.dataframe(comments_df)
+                        # st.divider()
 
-# ----------------- Migrate Channels to PostgreSQL ------------------- #
-    if selected == "Postgres Manager":
-        st.header("🛠️ PostgreSQL Manager")
-        st.markdown("### 🔍 Migrate Channel to PostgreSQL")
-        saved_collections = [c for c in mg_yth_db.list_collection_names() if c.endswith('_meta')]
-        channel_names = sorted([c.replace('_meta', '') for c in saved_collections])
-        selected_channel = st.selectbox("Select a Youtube channel", channel_names)
-        migrate_to_sql = st.button("Migrate YTC")
-        if migrate_to_sql:
-            with init_connection() as conn:
-                migrate_to_postgresql(conn, selected_channel, mg_yth_db)
+                        doc = mg_yth_db[f"{selected_channel_mg}_meta"].find_one()
+                        if doc:
+                            doc.pop("_id", None)
 
+                            # Metadata as metrics
+                            m1, m2, m3 = st.columns(3)
+                            # m1.metric("📺 Channel", doc.get("Channel_name", ""))
+                            m1.metric("👥 Subscribers", f"{int(doc.get('Subscribers', 0)):,}")
+                            m2.metric("👁️ Total Views", f"{int(doc.get('Views', 0)):,}")
+                            m3.metric("🎞️ Videos", doc.get("Total_videos", "—"))
 
-    # ----------------- Analyse Youtube Channel ---------------- #
+                            st.caption(f"🕒 Harvested at: {doc.get('Harvested_at', '—')}")
+                            st.divider()
+
+                            # Collection size summary
+                            st.markdown("**MongoDB Collection Counts**")
+                            summary = {}
+                            for suffix in ["_playlist", "_videos", "_comments"]:
+                                col_name = f"{selected_channel_mg}{suffix}"
+                                if col_name in mg_yth_db.list_collection_names():
+                                    summary[suffix.replace("_", "").capitalize()] = mg_yth_db[
+                                        col_name].count_documents({})
+                            if summary:
+                                s_cols = st.columns(len(summary))
+                                for idx, (label, count) in enumerate(summary.items()):
+                                    s_cols[idx].metric(f"📁 {label}", f"{count:,} docs")
+                        else:
+                            st.warning("⚠️ No metadata found for this channel.")
+                # ── Full Data View ─────────────────────────
+                if view_full and selected_channel_mg:
+                    with st.container(border=True):
+                        sec_icon, sec_title = st.columns([0.05, 0.95])
+                        with sec_icon:
+                            st.markdown("### 📊")
+                        with sec_title:
+                            st.markdown(f"### Full Data — {selected_channel_mg}")
+                            st.caption("Videos, comments and playlists loaded directly from MongoDB.")
+
+                        # st.divider()
+
+                        videos_data = list(mg_yth_db[f"{selected_channel_mg}_videos"].find())
+                        comments_data = list(mg_yth_db[f"{selected_channel_mg}_comments"].find())
+                        playlist_data = list(mg_yth_db[f"{selected_channel_mg}_playlist"].find())
+
+                        videos_df = pd.DataFrame(videos_data).drop(columns=["_id"], errors="ignore")
+                        comments_df = pd.DataFrame(comments_data).drop(columns=["_id"], errors="ignore")
+                        playlist_df = pd.DataFrame(playlist_data).drop(columns=["_id"], errors="ignore")
+
+                        # Top 10 chart
+                        if not videos_df.empty and "view_count" in videos_df.columns:
+                            st.markdown("#### 📈 Top 10 Videos by Views")
+                            videos_df["view_count"] = pd.to_numeric(videos_df["view_count"],
+                                                                    errors="coerce")
+                            top10 = videos_df.nlargest(10, "view_count")
+                            fig = px.bar(
+                                top10, x="view_count", y="video_title", orientation="h",
+                                title=f"Top 10 Videos — {selected_channel_mg}",
+                                color="view_count", color_continuous_scale="reds",
+                                labels={"view_count": "Views", "video_title": ""},
+                            )
+                            # fig.update_layout(xaxis_tickangle=45)
+                            # st.plotly_chart(fig, use_container_width=True)
+                            # st.divider()
+                            fig.update_layout(
+                                yaxis=dict(autorange="reversed"),  # highest at top
+                                xaxis_title="View Count",
+                                yaxis_title="",
+                                height=450,
+                                margin=dict(l=10, r=10, t=40, b=10),
+                                coloraxis_showscale=False,  # hide colour bar
+                            )
+                            fig.update_traces(
+                                texttemplate="%{x:,.0f}",  # show count on bar
+                                textposition="outside",
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                            st.divider()
+                        # Videos dataframe
+                        st.markdown("#### 🎞️ Videos")
+                        if not videos_df.empty:
+                            st.dataframe(videos_df, use_container_width=True)
+                            st.caption(f"Total: {len(videos_df):,} videos")
+                        else:
+                            st.info("No videos found.")
+
+                        st.divider()
+
+                        # Comments dataframe
+                        st.markdown("#### 💬 Comments")
+                        if not comments_df.empty:
+                            st.dataframe(comments_df, use_container_width=True)
+                            st.caption(f"Total: {len(comments_df):,} comments")
+                        else:
+                            st.info("No comments found.")
+
+                        st.divider()
+
+                        # Playlists dataframe
+                        st.markdown("#### 📂 Playlists")
+                        if not playlist_df.empty:
+                            st.dataframe(playlist_df, use_container_width=True)
+                            st.caption(f"Total: {len(playlist_df):,} playlists")
+                        else:
+                            st.info("No playlists found.")
+
+                        # MongoDB JSON export
+                        st.divider()
+                        if not videos_df.empty:
+                            mongo_json = json.dumps({
+                                "channel": selected_channel_mg,
+                                "videos": videos_df.to_dict(orient="records"),
+                                "comments": comments_df.to_dict(orient="records"),
+                                "playlists": playlist_df.to_dict(orient="records"),
+                            }, indent=2, default=str)
+                            st.download_button(
+                                label="📥 Download MongoDB Data as JSON",
+                                data=mongo_json,
+                                file_name=f"{selected_channel_mg}_mongodb_export.json",
+                                mime="application/json",
+                                use_container_width=True,
+                            )
+                # ── Delete button ─────────────────────────────────────
+                if delete_ch and selected_channel_mg:
+                    st.session_state.delete_requested = selected_channel_mg
+                # ── Delete confirmation ───────────────────────────────
+                if st.session_state.delete_requested:
+                    channel_to_delete = st.session_state.delete_requested
+                    with st.container(border=True):
+                        st.warning(f"⚠️ This will permanently delete all MongoDB data for **{selected_channel_mg}**.")
+                        confirm_c1, confirm_c2, _ = st.columns([1, 1, 2])
+                        with confirm_c1:
+                            if st.button("✅ Yes, Delete", use_container_width=True, key="confirm_delete"):
+                                for suffix in ["_meta", "_playlist", "_videos", "_comments"]:
+                                    mg_yth_db[f"{selected_channel_mg}{suffix}"].drop()
+                                # st.success(f"✅ '{selected_channel_mg}' deleted from MongoDB.")
+                                # Clear session state and rerun
+                                st.session_state.delete_requested = None
+                                st.success(f"✅ '{selected_channel_mg}' deleted from MongoDB.")
+                                st.rerun()
+                        with confirm_c2:
+                            if st.button("❌ Cancel", use_container_width=True, key="cancel_delete"):
+                                st.session_state.delete_requested = None
+                                st.info("Deletion cancelled.")
+                                st.rerun()
+                # selected_channel_mg = st.selectbox(
+                #     "Select a channel", all_harvested, key="mg_select"
+                # )
+                #
+                # col1, col2, col3 = st.columns([1, 1, 1])
+                # with col1:
+                #     view_basic = st.button("📄 View Basic Info")
+                # with col2:
+                #     view_full = st.button("📊 View Full Data")
+                # with col3:
+                #     delete_ch = st.button("🗑️ Delete Channel")
+                # if view_basic and selected_channel_mg:
+                #     doc = mg_yth_db[f"{selected_channel_mg}_meta"].find_one()
+                #     if doc:
+                #         doc.pop("_id", None)
+                #         st.markdown("**Channel Metadata**")
+                #         st.json(doc)
+                #
+                #         # Show collection sizes as a quick summary
+                #         summary = {}
+                #         for suffix in ["_playlist", "_videos", "_comments"]:
+                #             col_name = f"{selected_channel_mg}{suffix}"
+                #             if col_name in mg_yth_db.list_collection_names():
+                #                 summary[suffix.replace("_", "").capitalize()] = \
+                #                     mg_yth_db[col_name].count_documents({})
+                #         if summary:
+                #             st.markdown("**Collection Counts**")
+                #             st.dataframe(
+                #                 pd.DataFrame(summary.items(), columns=["Collection", "Count"]),
+                #                 use_container_width=True,
+                #             )
+                #
+                # if view_full and selected_channel_mg:
+                #     playlist_col = f"{selected_channel_mg}_playlist"
+                #     video_col = f"{selected_channel_mg}_videos"
+                #     comment_col = f"{selected_channel_mg}_comments"
+                #
+                #     if playlist_col in mg_yth_db.list_collection_names():
+                #         st.subheader("📂 Playlists")
+                #         st.dataframe(
+                #             pd.DataFrame(mg_yth_db[playlist_col].find()).drop(columns=["_id"], errors="ignore"),
+                #             use_container_width=True,
+                #         )
+                #     if video_col in mg_yth_db.list_collection_names():
+                #         st.subheader("🎞️ Videos")
+                #         st.dataframe(
+                #             pd.DataFrame(mg_yth_db[video_col].find()).drop(columns=["_id"], errors="ignore"),
+                #             use_container_width=True,
+                #         )
+                #     if comment_col in mg_yth_db.list_collection_names():
+                #         st.subheader("💬 Comments")
+                #         st.dataframe(
+                #             pd.DataFrame(mg_yth_db[comment_col].find()).drop(columns=["_id"], errors="ignore"),
+                #             use_container_width=True,
+                #         )
+                #
+                # if delete_ch and selected_channel_mg:
+                #     for suffix in ["_meta", "_playlist", "_videos", "_comments"]:
+                #         mg_yth_db[f"{selected_channel_mg}{suffix}"].drop()
+                #     st.success(f"✅ '{selected_channel_mg}' deleted from MongoDB.")
+
+            # ── PostgreSQL Manager ───────────────────────────
+            with pg_tab:
+                st.markdown("#### 🐘 PostgreSQL Manager")
+                st.caption("Migrate harvested channel data from MongoDB into the PostgreSQL data warehouse.")
+                # st.markdown("#### Migrate Channel from MongoDB → PostgreSQL")
+
+                # ──  Migration ──────────────────────────────
+                with st.container(border=True):
+                    sec_icon, sec_title = st.columns([0.05, 0.95])
+                    with sec_icon:
+                        st.markdown("### 🚀")
+                    with sec_title:
+                        st.markdown("#### Migrate Channel from MongoDB → PostgreSQL")
+                        st.caption("Populates channel_table, channel_playlist, channel_videos and channel_comments.")
+                    selected_channel_pg = st.selectbox(
+                        "Select a channel to migrate", all_harvested, key="pg_select"
+                    )
+                    mg_col1, mg_col2, mg_col3 = st.columns(3)
+                    with mg_col1:
+                        playlists_count = mg_yth_db[f"{selected_channel_pg}_playlist"].count_documents(
+                            {}) if f"{selected_channel_pg}_playlist" in mg_yth_db.list_collection_names() else 0
+                        st.metric("📂 Playlists in MongoDB", f"{playlists_count:,}")
+                    with mg_col2:
+                        videos_count = mg_yth_db[f"{selected_channel_pg}_videos"].count_documents(
+                            {}) if f"{selected_channel_pg}_videos" in mg_yth_db.list_collection_names() else 0
+                        st.metric("🎞️ Videos in MongoDB", f"{videos_count:,}")
+                    with mg_col3:
+                        comments_count = mg_yth_db[f"{selected_channel_pg}_comments"].count_documents(
+                            {}) if f"{selected_channel_pg}_comments" in mg_yth_db.list_collection_names() else 0
+                        st.metric("💬 Comments in MongoDB", f"{comments_count:,}")
+
+                    st.divider()
+
+                    # if st.button("🚀 Migrate to PostgreSQL", use_container_width=True):
+                    #     with init_connection() as conn:
+                    #         migrate_to_postgresql(conn, selected_channel_pg, mg_yth_db)
+
+                    col_a, col_b = st.columns([1, 2])
+                    with col_a:
+                        migrate_btn = st.button("🚀 Migrate to PostgreSQL")
+                    with col_b:
+                        st.caption(
+                            "This will create the channel_table, channel_playlist, "
+                            "channel_videos and channel_comments tables in PostgreSQL "
+                            "and populate them from MongoDB."
+                        )
+
+                    if migrate_btn and selected_channel_pg:
+                        with init_connection() as conn:
+                            migrate_to_postgresql(conn, selected_channel_pg, mg_yth_db)
+
+                # ── Section 2: Direct Store Table ────────────────────
+                with st.container(border=True):
+                    st.markdown("##### 🗃️ Direct Store — Basic Channel Info")
+                    st.caption("Shows channels stored directly during extraction via 'Also store in PostgreSQL'.")
+                    st.markdown('<hr style="margin:0.5rem 0; border-color:#333">', unsafe_allow_html=True)
+
+                    try:
+                        conn = init_connection()
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                SELECT channel_name, subscribers, channel_views,
+                                       total_videos, harvested_time
+                                FROM channel_table_direct
+                                ORDER BY harvested_time DESC;
+                            """)
+                            rows = cur.fetchall()
+
+                        if rows:
+                            df_direct = pd.DataFrame(rows, columns=[
+                                "Channel Name", "Subscribers",
+                                "Channel Views", "Total Videos", "Harvested Time"
+                            ])
+                            # Summary metrics
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("📺 Channels Stored", len(df_direct))
+                            m2.metric("🎞️ Total Videos",
+                                      f"{df_direct['Total Videos'].astype(int).sum():,}")
+                            m3.metric("👥 Total Subscribers",
+                                      f"{df_direct['Subscribers'].astype(int).sum():,}")
+                            st.markdown('<hr style="margin:0.5rem 0; border-color:#333">',
+                                        unsafe_allow_html=True)
+                            st.dataframe(df_direct, use_container_width=True)
+                        else:
+                            st.info("ℹ️ No direct store data found. Extract a channel with "
+                                    "'Also store in PostgreSQL' checked.")
+
+                    except Exception as e:
+                        st.error(f"❌ Could not load direct store table: {e}")
+
+    # if selected == "Mongo Manager":
+    #     st.markdown("### 🍃 Manage MongoDB")
+    #     col1, col2, col3 = st.columns([4, 1, 2])
+    #     with col1:
+    #         user_channels = [c.replace("_meta", "") for c in mg_yth_db.list_collection_names() if c.endswith("_meta")]
+    #         selected_channel_mongodb = st.selectbox("Select a YouTube channel", user_channels)
+    #
+    #     col4, col5, col6, _ = st.columns([1, 1, 3, 0.2])
+    #     with col4:
+    #         view_basic = st.button("📄 View Basic Detail")
+    #     with col5:
+    #         view_full  = st.button("📊View Complete Details")
+    #     with col6:
+    #         delete_ch  = st.button("🗑️ Delete Channel")
+
+        # if view_basic and selected_channel_mongodb:
+        #     doc = mg_yth_db[f"{selected_channel_mongodb}_meta"].find_one()
+        #     if doc:
+        #         doc.pop("_id", None)
+        #         st.json(doc)
+
+        # if view_full and selected_channel_mongodb:
+        #     video_col = f"{selected_channel_mongodb}_videos"
+        #     if video_col in mg_yth_db.list_collection_names():
+        #         st.subheader("Video Data")
+        #         st.dataframe(pd.DataFrame(mg_yth_db[video_col].find()))
+        #
+        #     comment_col = f"{selected_channel_mongodb}_comments"
+        #     if comment_col in mg_yth_db.list_collection_names():
+        #         st.subheader("Comment Data")
+        #         st.dataframe(pd.DataFrame(mg_yth_db[comment_col].find()))
+        #
+        # if delete_ch and selected_channel_mongodb:
+        #     for suffix in ["_meta", "_playlist", "_videos", "_comments"]:
+        #         mg_yth_db[f"{selected_channel_mongodb}{suffix}"].drop()
+        #     st.success(f"✅ Channel '{selected_channel_mongodb}' deleted from MongoDB.")
+
+    # ──────────────────────────────────────────────
+    # TAB 4 — YT Channel Analyzer (10 SQL queries)
+    # ──────────────────────────────────────────────
     if selected == "YT Channel Analyzer":
-        st.markdown("### YouTube Channel Analyzer")
+        st.markdown("#### 📊 YouTube Channel Analyzer")
+        st.caption("Run the pre-built SQL queries against your PostgreSQL data warehouse.")
 
-        # cur = conn.cursor()
+        def run_query(query, columns, index_col=None):
+            """Execute a SQL query and return a styled dataframe."""
+            try:
+                conn = init_connection()
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    rows = cur.fetchall()
+                df = pd.DataFrame(rows, columns=columns)
+                if index_col and index_col in df.columns:
+                    df = df.set_index(index_col)
+                return df
+            except Exception as e:
+                st.error(f"❌ Query failed: {e}")
+                return pd.DataFrame()
 
-        # Refactored FAQ Display Block with Reusability, Decorators, and Quota Tracking
+        # Q1
+        with st.expander("Q1 · Names of all videos and their corresponding channels"):
+            df = run_query(
+                """
+                SELECT ch.channel_name, v.video_name
+                FROM channel_videos v
+                JOIN channel_playlist p ON v.playlist_id = p.playlist_id
+                JOIN channel_table   ch ON p.channel_id  = ch.channel_id
+                ORDER BY ch.channel_name
+                """,
+                ["Channel Name", "Video Title"],
+                index_col="Channel Name",
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
 
-        # Sample function for quota tracking decorator
-        def track_quota(units=1, endpoint=""):
-            def decorator(func):
-                def wrapper(*args, **kwargs):
-                    if "quota_used" not in st.session_state:
-                        st.session_state.quota_used = 0
-                    st.session_state.quota_used += units
-                    return func(*args, **kwargs)
+        # Q2
+        with st.expander("Q2 · Channels with the most number of videos"):
+            df = run_query(
+                """
+                SELECT ch.channel_name, ch.total_videos AS video_count
+                FROM channel_table ch
+                ORDER BY ch.total_videos DESC
+                LIMIT 10
+                """,
+                ["Channel Name", "Video Count"],
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+                fig = px.bar(df, x="Channel Name", y="Video Count", title="Channels by Video Count")
+                st.plotly_chart(fig)
 
-                return wrapper
+        # Q3
+        with st.expander("Q3 · Top 10 most viewed videos and their channels"):
+            df = run_query(
+                """
+                SELECT ch.channel_name, v.video_name, v.view_count
+                FROM channel_videos v
+                LEFT JOIN channel_playlist p ON v.playlist_id = p.playlist_id
+                LEFT JOIN channel_table   ch ON p.channel_id  = ch.channel_id
+                ORDER BY v.view_count DESC
+                LIMIT 10
+                """,
+                ["Channel Name", "Video Title", "View Count"],
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+                fig = px.bar(df, x="Video Title", y="View Count", color="Channel Name",
+                             title="Top 10 Most Viewed Videos")
+                fig.update_layout(xaxis_tickangle=45)
+                st.plotly_chart(fig)
 
-            return decorator
+        # Q4
+        with st.expander("Q4 · Number of comments on each video"):
+            df = run_query(
+                """
+                SELECT v.video_name, v.comments_count
+                FROM channel_videos v
+                ORDER BY v.comments_count DESC
+                """,
+                ["Video Name", "Comment Count"],
+                index_col="Video Name",
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
 
-        # FAQ Handler
-        # def render_faq():
-        #
-        #     st.markdown('__<p style="text-align:left; font-size: 30px; color: #FAA026">Top 10 FAQs</P>__',
-        #                 unsafe_allow_html=True)
-        #
-        #     # Helper function to display a query result
-        #     @track_quota(units=0, endpoint="SQL Query")
-        #     def show_query_result(query, columns, index=None, width=1000):
-        #         cur.execute(query)
-        #         result = cur.fetchall()
-        #         df = pd.DataFrame(result, columns=columns)
-        #         if index:
-        #             df = df.set_index(index)
-        #         st.dataframe(df, width=width)
-        #         return df
-        #
-        #     with st.expander("Q1. What are the names of all the videos and their corresponding channels?"):
-        #         st.write("Here you can find a comprehensive list of channels and the associated videos within them:")
-        #         # query = """
-        #                 SELECT channel_table.channel_name, video_table.title
-        #                 FROM video_table
-        #                          JOIN channel_table ON video_table.channel_id = channel_table.channel_id
-        #                 ORDER BY channel_table.channel_name \
-        #                 """
-        #         # show_query_result(query, ['Channel Name', 'Video Title'], index='Channel Name')
-        #
-        #     with st.expander("Q2. Which channels have the most number of videos and how many videos do they have?"):
-        #         query = """
-        #                 SELECT channel_name, total_videos AS Videos
-        #                 FROM channel_table
-        #                 ORDER BY total_videos DESC LIMIT 3 \
-        #                 """
-        #         df = show_query_result(query, ['Channel Name', 'Total Video'])
-        #         channel_name, total_video = df.iloc[0]
-        #         st.write(
-        #             f"'{channel_name}' channel has the most videos with a total count of {total_video}. Below are the top 3 channels in the list")
-        #
-        #     with st.expander("Q3. What are the top 10 most viewed videos and their respective channels?"):
-        #         query = """
-        #                 SELECT channel_table.channel_name, video_table.title, video_table.view_count
-        #                 FROM video_table
-        #                          JOIN channel_table ON video_table.channel_id = channel_table.channel_id
-        #                 ORDER BY video_table.view_count DESC LIMIT 10 \
-        #                 """
-        #         df = show_query_result(query, ['Channel Name', 'Video Title', 'View Count'], index='Channel Name')
-        #         st.write(
-        #             f"{df.iloc[0, 0]} channel is on the top of the list for the video '{df.iloc[0, 1]}' with {df.iloc[0, 2]} views.")
-        #
-        #     with st.expander(
-        #             "Q4. How many comments were made on each video and what are their corresponding video names?"):
-        #         query = "SELECT title, comment_count FROM video_table ORDER BY comment_count DESC"
-        #         df = show_query_result(query, ['Video Name', 'Total Comment'], index='Video Name', width=700)
-        #         st.write(f"{df.index[0]} received {df.iloc[0, 0]} comments.")
-        #
-        #     with st.expander(
-        #             "Q5. Which videos have the highest number of likes and what are their corresponding channel names?"):
-        #         query = """
-        #                 SELECT video_table.like_count, video_table.title, channel_table.channel_name
-        #                 FROM video_table
-        #                          JOIN channel_table ON video_table.channel_id = channel_table.channel_id
-        #                 ORDER BY video_table.like_count DESC LIMIT 10 \
-        #                 """
-        #         df = show_query_result(query, ['Like Count', 'Video Name', 'Channel Name'], index='Like Count')
-        #         st.write("Below are the top 10 liked videos and their channel name:")
-        #
-        #     with st.expander("Q6. What is the total number of likes and dislikes for each video?"):
-        #         query = "SELECT title, like_count, dislike_count FROM video_table ORDER BY like_count DESC"
-        #         df = show_query_result(query, ['Video Name', 'Like Count', 'Dislike Count'], index='Video Name')
-        #         st.write("Note: YouTube no longer shows public dislike counts as per their 2021 update.")
-        #
-        #     with st.expander("Q7. What is the total and average number of views for each channel?"):
-        #         query = """
-        #                 SELECT channel_table.channel_name, \
-        #                        SUM(video_table.view_count), \
-        #                        ROUND(AVG(video_table.view_count), 2)
-        #                 FROM video_table
-        #                          JOIN channel_table ON video_table.channel_id = channel_table.channel_id
-        #                 GROUP BY channel_table.channel_name
-        #                 ORDER BY SUM(video_table.view_count) DESC \
-        #                 """
-        #         show_query_result(query, ['Channel Name', 'View Count', 'Avg View/Video'], index='Channel Name')
-        #
-        #     with st.expander("Q8. Which channels published videos in the year 2022?"):
-        #         query = """
-        #                 SELECT channel_table.channel_name, COUNT(video_table.title), SUM(video_table.view_count)
-        #                 FROM video_table
-        #                          JOIN channel_table ON video_table.channel_id = channel_table.channel_id
-        #                 WHERE EXTRACT(YEAR FROM video_table.published_date) = 2022
-        #                 GROUP BY channel_table.channel_name
-        #                 ORDER BY COUNT(video_table.title) DESC \
-        #                 """
-        #         show_query_result(query, ['Channel Name', 'Total Videos', 'Total Views'], index='Channel Name')
-        #
-        #     with st.expander("Q9. What is the average duration of all videos in each channel?"):
-        #         query = """
-        #                 SELECT channel_name,
-        #                        EXTRACT(MINUTE FROM duration) || ' mins ' || ROUND(EXTRACT(SECOND FROM duration)) || \
-        #                        ' secs' AS avg_duration
-        #                 FROM (SELECT channel_table.channel_name, AVG(video_table.duration) AS duration \
-        #                       FROM video_table \
-        #                                JOIN channel_table ON video_table.channel_id = channel_table.channel_id \
-        #                       GROUP BY channel_table.channel_name) AS subq \
-        #                 """
-        #         show_query_result(query, ['Channel Name', 'Average Duration'], index='Channel Name')
-        #
-        #     with st.expander(
-        #             "Q10. Which videos have the highest number of comments and what are their corresponding channel names?"):
-        #         query = """SELECT video_table.comment_count, video_table.title, channel_table.channel_name
-        #                 FROM video_table JOIN channel_table ON video_table.channel_id = channel_table.channel_id
-        #                 ORDER BY comment_count DESC LIMIT 10"""
-        #         df = show_query_result(query, ['Total Comment', 'Video Name', 'Channel Name'], index='Total Comment')
-        #         st.write(
-        #             f"'{df.iloc[0, 1]}' by {df.iloc[0, 2]} received {df.iloc[0, 0]} comments and holds the top position.")
-        #
-        #     st.write("Note: The above insights are based on the scraped dataset and may not represent real-time data.")
-        #
-        # st.markdown('__<p style="text-align:left; font-size: 30px; color: #FAA026">Top 10 FAQs</P>__',
-        #                 unsafe_allow_html=True)
-        #
-        # display_faq = st.button("Display FAQ")
-        # if display_faq:
-        #     with init_connection() as conn:
-        #         cur = conn.cursor()
-        #         render_faq()
+        # Q5
+        with st.expander("Q5 · Videos with the highest number of likes"):
+            df = run_query(
+                """
+                SELECT ch.channel_name, v.video_name, v.like_count
+                FROM channel_videos v
+                LEFT JOIN channel_playlist p ON v.playlist_id = p.playlist_id
+                LEFT JOIN channel_table   ch ON p.channel_id  = ch.channel_id
+                ORDER BY v.like_count DESC
+                LIMIT 10
+                """,
+                ["Channel Name", "Video Title", "Like Count"],
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+
+        # Q6
+        with st.expander("Q6 · Total likes and dislikes for each video"):
+            df = run_query(
+                """
+                SELECT video_name, like_count, dislike_count
+                FROM channel_videos
+                ORDER BY like_count DESC
+                """,
+                ["Video Name", "Like Count", "Dislike Count"],
+                index_col="Video Name",
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+                st.caption("Note: YouTube removed public dislike counts in 2021; dislike_count will be 0.")
+
+        # Q7
+        with st.expander("Q7 · Total views for each channel"):
+            df = run_query(
+                """
+                SELECT channel_name, channel_views AS total_views
+                FROM channel_table
+                ORDER BY total_views DESC
+                """,
+                ["Channel Name", "Total Views"],
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+                fig = px.bar(df, x="Channel Name", y="Total Views", title="Total Views per Channel")
+                st.plotly_chart(fig)
+
+        # Q8
+        with st.expander("Q8 · Channels that published videos in 2022"):
+            df = run_query(
+                """
+                SELECT DISTINCT ch.channel_name,
+                       COUNT(v.video_id)  AS videos_in_2022,
+                       SUM(v.view_count)  AS total_views
+                FROM channel_videos v
+                LEFT JOIN channel_playlist p ON v.playlist_id = p.playlist_id
+                LEFT JOIN channel_table   ch ON p.channel_id  = ch.channel_id
+                WHERE EXTRACT(YEAR FROM v.published_date) = 2022
+                GROUP BY ch.channel_name
+                ORDER BY videos_in_2022 DESC
+                """,
+                ["Channel Name", "Videos in 2022", "Total Views"],
+                index_col="Channel Name",
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No videos published in 2022 found in the warehouse.")
+
+        # Q9
+        with st.expander("Q9 · Average duration of videos per channel"):
+            df = run_query(
+                """
+                SELECT ch.channel_name,
+                       TO_CHAR(AVG(v.duration::interval), 'HH24:MI:SS') AS avg_duration
+                FROM channel_videos v
+                LEFT JOIN channel_playlist p ON v.playlist_id = p.playlist_id
+                LEFT JOIN channel_table   ch ON p.channel_id  = ch.channel_id
+                GROUP BY ch.channel_name
+                ORDER BY ch.channel_name
+                """,
+                ["Channel Name", "Avg Duration (HH:MM:SS)"],
+                index_col="Channel Name",
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+
+        # Q10
+        with st.expander("Q10 · Videos with the highest number of comments"):
+            df = run_query(
+                """
+                SELECT ch.channel_name, v.video_name, v.comments_count
+                FROM channel_videos v
+                LEFT JOIN channel_playlist p ON v.playlist_id = p.playlist_id
+                LEFT JOIN channel_table   ch ON p.channel_id  = ch.channel_id
+                ORDER BY v.comments_count DESC
+                LIMIT 10
+                """,
+                ["Channel Name", "Video Title", "Comment Count"],
+            )
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
 
 
+# ==============================
+# CONTACT
+# ==============================
 if selected == "Contact":
-    st.header('Project: Youtube_Data_Harvesting')
+    st.header("Project: YouTube Data Harvesting")
     st.subheader("My Contact Details")
     st.write("Created by: Akellesh Vasudevan")
     st.write("LinkedIn Profile:")
     st.markdown("https://www.linkedin.com/in/akellesh/")
-    st.write("Github Profile:")
-    st.markdown("https://github.com/Akellesh/YouTube-Data-Harvesting-and-Warehousing-using-SQL-MongoDB-and-Streamlit---Project")
-
-if selected == "Home":
-    st.header('Project: Youtube_Data_Harvesting')
+    st.write("GitHub Profile:")
+    st.markdown(
+        "https://github.com/Akellesh/YouTube-Data-Harvesting-and-Warehousing-using-SQL-MongoDB-and-Streamlit---Project"
+    )

@@ -1,0 +1,24 @@
+Money pechu = UC7fQFl37yAOaPaoxQm-TqSA
+The AI dude = UCsq38VCprHHb_0rwBNfWFYw
+ShakraShamim = UCQhpnItclGAUn4NdGGcEyPQ
+tryexponent = UCjm_qVkCPjOVDz9BWjNqO9A
+misraturp = UCpNUYWW0kiqyh0j5Qy3aU7w
+CSinTamil = UCh561gUA2ssj853n1NOHKDA
+DS with keerthi = UCvAFuyx9Fg0U10W7dTOnADg
+TechSatire = UCON_gtDQSNnWS1gwBcqgRKg
+NithyaDuraisamy = UCXsisJBABS2n2rQjR_rbJEg
+makkal pechu = UCRySNNVhiuLWciU_20H84-Q
+math and me = UCjcvUCKI-7L0xKMf4gi9Tlg
+Danny techie talks = UCzUOaUQLg3UIgOi6PT6SF7g
+selinashrivastava = UCt9a_f6O0LGd20rm_KH8kpw
+yoganawithai = UCkub3ufZT40UjpWTUTlfZ7g
+way2gotamil = UCnRGynbTJF0AoOjqanabIJw
+krish naik = UCNU_lfiiWBdtULKOw6X0Dig
+free code camp = UC8butISFwT-Wl7EV0hUK0BQ
+Error Makes Clever = UCwr-evhuzGZgDFrq_1pLt_A
+
+
+
+
+❌
+API Error: <HttpError 400 when requesting https://youtube.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=w7rAmVVEVr4&maxResults=50&textFormat=plainText&key=AIzaSyDFWDGYi9U5UJJn_KvrvG8t55Q-qSzolEs&alt=json returned "The API server failed to successfully process the request. While this can be a transient error, it usually indicates that the request's input is invalid. Check the structure of the <code>commentThread</code> resource in the request body to ensure that it is valid.". Details: "[{'message': "The API server failed to successfully process the request. While this can be a transient error, it usually indicates that the request's input is invalid. Check the structure of the <code>commentThread</code> resource in the request body to ensure that it is valid.", 'domain': 'youtube.commentThread', 'reason': 'processingFailure', 'location': 'body', 'locationType': 'other'}]">
