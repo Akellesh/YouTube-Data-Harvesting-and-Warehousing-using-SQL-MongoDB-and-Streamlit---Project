@@ -1,9 +1,6 @@
 # ----- Import Basic Packages ----- #
 import pandas as pd
-import numpy as np
 import json
-import bson
-import time
 import re
 from datetime import datetime
 import isodate
@@ -25,7 +22,7 @@ from psycopg2 import DatabaseError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# ---------- YouTube API Management --------------- #
+# ---------- Complete YouTube API Management --------------- #
 # ---- API Keys ---- from .streamlit/secrets.toml #
 YOUTUBE_API_KEYS_P1 = st.secrets["youtube1"]["api_keys"]  # Project 1 — 10,000 quota
 YOUTUBE_API_KEYS_P2 = st.secrets["youtube2"]["api_keys"]  # Project 2 — 10,000 quota
@@ -71,8 +68,7 @@ def increment_quota(cost_key):
     cost = API_COST_MAP.get(cost_key, 1)
     st.session_state.quota_used += cost
 
-
-# --------- Track API usage and display ---------- #
+# --------- Track YouTube API usage and display ---------- #
 def show_quota_usage():
     total_quota = 20000
     per_project = 10000
@@ -135,13 +131,12 @@ def safe_api_call(service_function, cost_key=None):
                 continue
             else:
                 # 403 on commentThreads is expected — don't alarm the user
-                if e.resp.status != 403:
+                if e.resp.status not in [403, 400]:
                     st.error(f"❌ API Error: {e}")
                 return None
 
     st.error("🚫 All API keys exhausted or failed.")
     return None
-
 
 # ----------- MongoDB Setup -------------- #
 @st.cache_resource
@@ -155,16 +150,13 @@ def get_mongo_client():
         st.error(f"❌ Failed to connect to MongoDB: {e}")
         st.stop()
 
-
 client = get_mongo_client()
 mg_yth_db = client["YouTubeHarvest"]
 collection_list = mg_yth_db.list_collection_names()
 
-
 # ---- Helper: sanitize collection names ---- #
-def sanitize(name):
-    return re.sub(r"[.$]", "_", name)
-
+# def sanitize(name):
+#     return re.sub(r"[.$]", "_", name)
 
 # -------- Initialize Postgres connection --------- #
 @st.cache_resource
@@ -480,7 +472,6 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
 # for @st.cache_data and pass it explicitly into every lambda
 # to avoid closure / global-variable bugs.
 # ============================================================
-
 @st.cache_data
 def get_channel_stats(_channel_id):
     """Fetch top-level channel statistics and the uploads playlist ID."""
@@ -506,31 +497,6 @@ def get_channel_stats(_channel_id):
         }
     except KeyError:
         return None
-
-@st.cache_data
-def get_playlist_info(_channel_id, channel_name, playlist_id):
-    """Fetch metadata for a single playlist by playlist_id."""
-    response = safe_api_call(
-        lambda yt: yt.playlists().list(
-            part="snippet,contentDetails,status",
-            id=playlist_id,
-        ).execute(),
-        cost_key="playlists().list",
-    )
-    if not response or not response.get("items"):
-        return None
-    item = response["items"][0]
-    return {
-        "playlist_id":    playlist_id,
-        "playlist_name":  item["snippet"]["title"],
-        "channel_name":   channel_name,
-        "channel_id":     _channel_id,          # ← uses parameter, not global
-        "description":    item["snippet"].get("description", ""),
-        "item_count":     item["contentDetails"].get("itemCount", 0),
-        "privacy_status": item["status"].get("privacyStatus", "public"),
-        "published_at":   item["snippet"].get("publishedAt"),
-        "harvested_at":   datetime.now().isoformat(),
-    }
 
 @st.cache_data
 def get_all_playlists_for_channel(_channel_id, channel_name):
@@ -566,7 +532,6 @@ def get_all_playlists_for_channel(_channel_id, channel_name):
         if not next_page_token:
             break
     return playlists
-
 
 # @st.cache_data
 def get_videos_from_playlist(_playlist_id, max_results=500):
@@ -798,11 +763,9 @@ def extract_channel_all_details(_channel_id):
     progress.progress(1.0, "✅ Harvest complete!")
     return channel_data
 
-
 # ============================================================
 # Streamlit UI
 # ============================================================
-
 st.set_page_config(page_title="YouTube Data Harvesting", layout="wide")
 
 with st.sidebar:
@@ -821,7 +784,7 @@ with st.sidebar:
         },
     )
 
-# ---- Session state defaults ---- #
+# ---------- Session state defaults ------------ #
 if "api_status" not in st.session_state:
     st.session_state.api_status = "🕒 Waiting for API connection test..."
 if "tested_channel_name" not in st.session_state:
@@ -860,7 +823,6 @@ if selected == "YDH_DB":
         default_index=0,
         orientation="horizontal",
     )
-
     # ──────────────────────────────────────────────
     # TAB 1 — YT Channel Extractor
     # ──────────────────────────────────────────────

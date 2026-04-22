@@ -24,6 +24,32 @@ Aishwarya Srinivasan = UCzd4ZN716evEjtbJERBMTfg
 
 https://github.com/Akellesh/YouTube-Data-Harvesting-and-Warehousing-using-SQL-MongoDB-and-Streamlit---Project/tree/master
 
+@st.cache_data
+def get_playlist_info(_channel_id, channel_name, playlist_id):
+    """Fetch metadata for a single playlist by playlist_id."""
+    response = safe_api_call(
+        lambda yt: yt.playlists().list(
+            part="snippet,contentDetails,status",
+            id=playlist_id,
+        ).execute(),
+        cost_key="playlists().list",
+    )
+    if not response or not response.get("items"):
+        return None
+    item = response["items"][0]
+    return {
+        "playlist_id":    playlist_id,
+        "playlist_name":  item["snippet"]["title"],
+        "channel_name":   channel_name,
+        "channel_id":     _channel_id,          # ← uses parameter, not global
+        "description":    item["snippet"].get("description", ""),
+        "item_count":     item["contentDetails"].get("itemCount", 0),
+        "privacy_status": item["status"].get("privacyStatus", "public"),
+        "published_at":   item["snippet"].get("publishedAt"),
+        "harvested_at":   datetime.now().isoformat(),
+    }
+
+
 
 ❌
 API Error: <HttpError 400 when requesting https://youtube.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=w7rAmVVEVr4&maxResults=50&textFormat=plainText&key=AIzaSyDFWDGYi9U5UJJn_KvrvG8t55Q-qSzolEs&alt=json returned "The API server failed to successfully process the request. While this can be a transient error, it usually indicates that the request's input is invalid. Check the structure of the <code>commentThread</code> resource in the request body to ensure that it is valid.". Details: "[{'message': "The API server failed to successfully process the request. While this can be a transient error, it usually indicates that the request's input is invalid. Check the structure of the <code>commentThread</code> resource in the request body to ensure that it is valid.", 'domain': 'youtube.commentThread', 'reason': 'processingFailure', 'location': 'body', 'locationType': 'other'}]">
