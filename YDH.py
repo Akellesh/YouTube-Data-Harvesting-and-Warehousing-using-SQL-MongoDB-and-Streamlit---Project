@@ -190,11 +190,9 @@ def parse_duration_to_hms(duration_str):
     except Exception:
         return None
 
-
 # ============================================================
 # PostgreSQL - DB Operations
 # ============================================================
-
 def store_postgresql_direct(conn, data):
     """Store basic channel info directly to PostgreSQL right after harvest."""
     with st.spinner("🔧 Storing basic channel info in PostgreSQL..."):
@@ -209,9 +207,9 @@ def store_postgresql_direct(conn, data):
                     CREATE TABLE IF NOT EXISTS channel_table_direct (
                         channel_id    VARCHAR(50) PRIMARY KEY,
                         channel_name  VARCHAR(255),
-                        subscribers   INT,
-                        channel_views INT,
-                        total_videos  INT,
+                        subscribers   BIGINT,
+                        channel_views BIGINT,
+                        total_videos  BIGINT,
                         harvested_time TIMESTAMP
                     );
                 """)
@@ -249,9 +247,9 @@ def create_postgresql_tables(conn):
                     CREATE TABLE IF NOT EXISTS channel_table (
                         channel_id    VARCHAR(50) PRIMARY KEY,
                         channel_name  VARCHAR(255),
-                        subscribers   INT,
-                        channel_views INT,
-                        total_videos  INT,
+                        subscribers   BIGINT,
+                        channel_views BIGINT,
+                        total_videos  BIGINT,
                         harvested_time TIMESTAMP
                     );
                 """)
@@ -279,7 +277,7 @@ def create_postgresql_tables(conn):
                         duration          TIME,
                         video_quality     VARCHAR(20),
                         licensed          VARCHAR(10),
-                        view_count        INT,
+                        view_count        BIGINT,
                         like_count        INT,
                         dislike_count     INT,
                         favorite_count    INT,
@@ -309,7 +307,6 @@ def create_postgresql_tables(conn):
         except Exception as e:
             conn.rollback()
             st.error(f"❌ Table creation failed: {e}")
-
 
 def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
     """Migrate a harvested channel from MongoDB to PostgreSQL."""
@@ -477,7 +474,6 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
         st.error(f"❌ Migration failed: {e}")
         traceback.print_exc()
 
-
 # ============================================================
 # YouTube API Data Fetching Functions
 # All functions use the _param (underscore-prefix) convention
@@ -511,7 +507,6 @@ def get_channel_stats(_channel_id):
     except KeyError:
         return None
 
-
 @st.cache_data
 def get_playlist_info(_channel_id, channel_name, playlist_id):
     """Fetch metadata for a single playlist by playlist_id."""
@@ -536,7 +531,6 @@ def get_playlist_info(_channel_id, channel_name, playlist_id):
         "published_at":   item["snippet"].get("publishedAt"),
         "harvested_at":   datetime.now().isoformat(),
     }
-
 
 @st.cache_data
 def get_all_playlists_for_channel(_channel_id, channel_name):
@@ -649,7 +643,6 @@ def get_videos_from_playlist(_playlist_id, max_results=500):
 
     return videos
 
-
 # @st.cache_data
 def get_comments_for_video(_video_id, max_comments=20):
     """
@@ -699,7 +692,6 @@ def get_comments_for_video(_video_id, max_comments=20):
             break
 
     return comments
-
 
 # @st.cache_data(ttl=3600, show_spinner=False)
 def extract_channel_all_details(_channel_id):
@@ -855,7 +847,6 @@ if selected == "Home":
     - 🐘 Migrate data to **PostgreSQL** (data warehouse)
     - 📊 Analyse channel data using pre-built SQL queries
     """)
-
 
 # ==============================
 # YDH_DB
