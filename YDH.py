@@ -465,7 +465,6 @@ def migrate_to_postgresql(conn, selected_channel, mg_yth_db):
         conn.rollback()
         st.error(f"❌ Migration failed: {e}")
         traceback.print_exc()
-
 # ============================================================
 # YouTube API Data Fetching Functions
 # All functions use the _param (underscore-prefix) convention
@@ -805,7 +804,7 @@ if selected == "Home":
     st.header("Project: YouTube Data Harvesting")
     st.markdown("""
     This application allows you to:
-    - 🔍 Search and extract data from YouTube channels via the Google API
+    - 🔍 Search and extract data from YouTube channels via the Google YouTube API
     - 🍃 Store harvested data in **MongoDB** (data lake)
     - 🐘 Migrate data to **PostgreSQL** (data warehouse)
     - 📊 Analyse channel data using pre-built SQL queries
@@ -1033,12 +1032,12 @@ if selected == "YDH_DB":
                         mime="application/json",
                         use_container_width=True,
                     )
-                    st.info("💡 Go to **DB Manager → MongoDB Manager** to view videos, comments and charts.")
+                    # st.info("💡 Go to **DB Manager → MongoDB Manager** to view videos, comments and charts.")
                 else:
                     st.caption("💡 Tick the 'Export data as JSON' checkbox above to enable download.")
             else:
                 st.info("💡 Extract a channel first to enable JSON download.")
-
+                st.info("💡 Go to **DB Manager → MongoDB Manager** to view videos, comments and charts.")
     # ──────────────────────────────────────────────
     # TAB 2 — Mongo Manager
     # ──────────────────────────────────────────────
@@ -1097,8 +1096,6 @@ if selected == "YDH_DB":
                             st.markdown(f"### Basic Info — {selected_channel_mg}")
                             st.caption("Channel metadata and collection counts from MongoDB.")
 
-                        # st.divider()
-
                         doc = mg_yth_db[f"{selected_channel_mg}_meta"].find_one()
                         if doc:
                             doc.pop("_id", None)
@@ -1137,8 +1134,6 @@ if selected == "YDH_DB":
                             st.markdown(f"### Full Data — {selected_channel_mg}")
                             st.caption("Videos, comments and playlists loaded directly from MongoDB.")
 
-                        # st.divider()
-
                         videos_data = list(mg_yth_db[f"{selected_channel_mg}_videos"].find())
                         comments_data = list(mg_yth_db[f"{selected_channel_mg}_comments"].find())
                         playlist_data = list(mg_yth_db[f"{selected_channel_mg}_playlist"].find())
@@ -1159,9 +1154,7 @@ if selected == "YDH_DB":
                                 color="view_count", color_continuous_scale="reds",
                                 labels={"view_count": "Views", "video_title": ""},
                             )
-                            # fig.update_layout(xaxis_tickangle=45)
-                            # st.plotly_chart(fig, use_container_width=True)
-                            # st.divider()
+
                             fig.update_layout(
                                 yaxis=dict(autorange="reversed"),  # highest at top
                                 xaxis_title="View Count",
@@ -1183,7 +1176,6 @@ if selected == "YDH_DB":
                             st.caption(f"Total: {len(videos_df):,} videos")
                         else:
                             st.info("No videos found.")
-
                         st.divider()
 
                         # Comments dataframe
@@ -1193,7 +1185,6 @@ if selected == "YDH_DB":
                             st.caption(f"Total: {len(comments_df):,} comments")
                         else:
                             st.info("No comments found.")
-
                         st.divider()
 
                         # Playlists dataframe
@@ -1394,43 +1385,6 @@ if selected == "YDH_DB":
                     except Exception as e:
                         st.error(f"❌ Could not load direct store table: {e}")
 
-    # if selected == "Mongo Manager":
-    #     st.markdown("### 🍃 Manage MongoDB")
-    #     col1, col2, col3 = st.columns([4, 1, 2])
-    #     with col1:
-    #         user_channels = [c.replace("_meta", "") for c in mg_yth_db.list_collection_names() if c.endswith("_meta")]
-    #         selected_channel_mongodb = st.selectbox("Select a YouTube channel", user_channels)
-    #
-    #     col4, col5, col6, _ = st.columns([1, 1, 3, 0.2])
-    #     with col4:
-    #         view_basic = st.button("📄 View Basic Detail")
-    #     with col5:
-    #         view_full  = st.button("📊View Complete Details")
-    #     with col6:
-    #         delete_ch  = st.button("🗑️ Delete Channel")
-
-        # if view_basic and selected_channel_mongodb:
-        #     doc = mg_yth_db[f"{selected_channel_mongodb}_meta"].find_one()
-        #     if doc:
-        #         doc.pop("_id", None)
-        #         st.json(doc)
-
-        # if view_full and selected_channel_mongodb:
-        #     video_col = f"{selected_channel_mongodb}_videos"
-        #     if video_col in mg_yth_db.list_collection_names():
-        #         st.subheader("Video Data")
-        #         st.dataframe(pd.DataFrame(mg_yth_db[video_col].find()))
-        #
-        #     comment_col = f"{selected_channel_mongodb}_comments"
-        #     if comment_col in mg_yth_db.list_collection_names():
-        #         st.subheader("Comment Data")
-        #         st.dataframe(pd.DataFrame(mg_yth_db[comment_col].find()))
-        #
-        # if delete_ch and selected_channel_mongodb:
-        #     for suffix in ["_meta", "_playlist", "_videos", "_comments"]:
-        #         mg_yth_db[f"{selected_channel_mongodb}{suffix}"].drop()
-        #     st.success(f"✅ Channel '{selected_channel_mongodb}' deleted from MongoDB.")
-
     # ──────────────────────────────────────────────
     # TAB 4 — YT Channel Analyzer (10 SQL queries)
     # ──────────────────────────────────────────────
@@ -1620,7 +1574,6 @@ if selected == "YDH_DB":
             )
             if not df.empty:
                 st.dataframe(df, use_container_width=True)
-
 
 # ==============================
 # CONTACT

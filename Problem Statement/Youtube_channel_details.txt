@@ -49,7 +49,3 @@ def get_playlist_info(_channel_id, channel_name, playlist_id):
         "harvested_at":   datetime.now().isoformat(),
     }
 
-
-
-❌
-API Error: <HttpError 400 when requesting https://youtube.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=w7rAmVVEVr4&maxResults=50&textFormat=plainText&key=AIzaSyDFWDGYi9U5UJJn_KvrvG8t55Q-qSzolEs&alt=json returned "The API server failed to successfully process the request. While this can be a transient error, it usually indicates that the request's input is invalid. Check the structure of the <code>commentThread</code> resource in the request body to ensure that it is valid.". Details: "[{'message': "The API server failed to successfully process the request. While this can be a transient error, it usually indicates that the request's input is invalid. Check the structure of the <code>commentThread</code> resource in the request body to ensure that it is valid.", 'domain': 'youtube.commentThread', 'reason': 'processingFailure', 'location': 'body', 'locationType': 'other'}]">
