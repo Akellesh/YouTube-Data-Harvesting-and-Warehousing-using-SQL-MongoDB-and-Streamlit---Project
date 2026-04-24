@@ -1234,38 +1234,7 @@ if selected == "YDH_DB":
                                 st.session_state.delete_requested = None
                                 st.info("Deletion cancelled.")
                                 st.rerun()
-                # selected_channel_mg = st.selectbox(
-                #     "Select a channel", all_harvested, key="mg_select"
-                # )
-                #
-                # col1, col2, col3 = st.columns([1, 1, 1])
-                # with col1:
-                #     view_basic = st.button("📄 View Basic Info")
-                # with col2:
-                #     view_full = st.button("📊 View Full Data")
-                # with col3:
-                #     delete_ch = st.button("🗑️ Delete Channel")
-                # if view_basic and selected_channel_mg:
-                #     doc = mg_yth_db[f"{selected_channel_mg}_meta"].find_one()
-                #     if doc:
-                #         doc.pop("_id", None)
-                #         st.markdown("**Channel Metadata**")
-                #         st.json(doc)
-                #
-                #         # Show collection sizes as a quick summary
-                #         summary = {}
-                #         for suffix in ["_playlist", "_videos", "_comments"]:
-                #             col_name = f"{selected_channel_mg}{suffix}"
-                #             if col_name in mg_yth_db.list_collection_names():
-                #                 summary[suffix.replace("_", "").capitalize()] = \
-                #                     mg_yth_db[col_name].count_documents({})
-                #         if summary:
-                #             st.markdown("**Collection Counts**")
-                #             st.dataframe(
-                #                 pd.DataFrame(summary.items(), columns=["Collection", "Count"]),
-                #                 use_container_width=True,
-                #             )
-                #
+
                 # if view_full and selected_channel_mg:
                 #     playlist_col = f"{selected_channel_mg}_playlist"
                 #     video_col = f"{selected_channel_mg}_videos"
