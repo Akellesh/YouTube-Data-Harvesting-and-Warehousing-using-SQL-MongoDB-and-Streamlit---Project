@@ -1235,35 +1235,6 @@ if selected == "YDH_DB":
                                 st.info("Deletion cancelled.")
                                 st.rerun()
 
-                # if view_full and selected_channel_mg:
-                #     playlist_col = f"{selected_channel_mg}_playlist"
-                #     video_col = f"{selected_channel_mg}_videos"
-                #     comment_col = f"{selected_channel_mg}_comments"
-                #
-                #     if playlist_col in mg_yth_db.list_collection_names():
-                #         st.subheader("📂 Playlists")
-                #         st.dataframe(
-                #             pd.DataFrame(mg_yth_db[playlist_col].find()).drop(columns=["_id"], errors="ignore"),
-                #             use_container_width=True,
-                #         )
-                #     if video_col in mg_yth_db.list_collection_names():
-                #         st.subheader("🎞️ Videos")
-                #         st.dataframe(
-                #             pd.DataFrame(mg_yth_db[video_col].find()).drop(columns=["_id"], errors="ignore"),
-                #             use_container_width=True,
-                #         )
-                #     if comment_col in mg_yth_db.list_collection_names():
-                #         st.subheader("💬 Comments")
-                #         st.dataframe(
-                #             pd.DataFrame(mg_yth_db[comment_col].find()).drop(columns=["_id"], errors="ignore"),
-                #             use_container_width=True,
-                #         )
-                #
-                # if delete_ch and selected_channel_mg:
-                #     for suffix in ["_meta", "_playlist", "_videos", "_comments"]:
-                #         mg_yth_db[f"{selected_channel_mg}{suffix}"].drop()
-                #     st.success(f"✅ '{selected_channel_mg}' deleted from MongoDB.")
-
             # ── PostgreSQL Manager ───────────────────────────
             with pg_tab:
                 st.markdown("#### 🐘 PostgreSQL Manager")
